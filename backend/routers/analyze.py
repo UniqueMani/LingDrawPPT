@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.deps import require_user
 from backend.models import AnalyzeResponse, ChartResponse, SlideRequest
+from backend.services.chart_context import merge_slide_context
 from backend.services.chart_gen import generate_echarts_option
 from backend.services.semantic import analyze_semantics
 
@@ -18,11 +19,13 @@ async def analyze(req: SlideRequest, _: dict = Depends(require_user)) -> Analyze
         extracted = sem.get("extracted", {}) or {}
         reason = sem.get("reason", "") or ""
 
+        ctx = merge_slide_context(req.topic, req.body, req.data_description)
         option = generate_echarts_option(
             intent=intent,
             chartType=chartType,
             topic=req.topic,
             extracted=extracted,
+            context_text=ctx,
         )
 
         chart = ChartResponse(

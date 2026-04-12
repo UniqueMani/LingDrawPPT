@@ -22,6 +22,24 @@ const routes = [
     name: 'Workspace',
     component: () => import('../views/WorkspaceView.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/charts/intent',
+    name: 'ChartIntent',
+    component: () => import('../views/ChartIntentView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/charts/code',
+    name: 'ChartCode',
+    component: () => import('../views/ChartCodeView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/illustration/prompt',
+    name: 'IllustrationPrompt',
+    component: () => import('../views/IllustrationPromptView.vue'),
+    meta: { requiresAuth: true }
   }
 ];
 
