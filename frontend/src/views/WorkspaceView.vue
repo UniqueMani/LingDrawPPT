@@ -3,32 +3,84 @@ import { computed } from 'vue';
 import { store } from '../store';
 import { analyze, illustration } from '../api/client';
 import ResultPanel from '../components/ResultPanel.vue';
+import type { SlideState } from '../types';
 
 const currentSlide = computed(() => store.slides[store.currentIndex]);
+
+function slideStatusShort(sl: SlideState) {
+  const c =
+    sl.statusAnalyze === 'success' ? '图表✓' : sl.statusAnalyze === 'loading' ? '图表…' : '图表—';
+  const i =
+    sl.statusIllustration === 'success'
+      ? '配图✓'
+      : sl.statusIllustration === 'loading'
+        ? '配图…'
+        : '配图—';
+  return `${c} · ${i}`;
+}
+
+async function generateChartOnly() {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.statusAnalyze = 'loading';
+  slide.errorAnalyze = undefined;
+  try {
+    slide.analyze = await analyze(store.baseUrl, slide.input);
+    slide.statusAnalyze = 'success';
+    store.addLog(`第 ${store.currentIndex + 1} 页：已生成数据图表`);
+  } catch (e: any) {
+    slide.statusAnalyze = 'error';
+    slide.errorAnalyze = e?.message || String(e);
+    store.addLog(`图表失败: ${slide.errorAnalyze}`);
+  }
+}
+
+async function generateIllusOnly() {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.statusIllustration = 'loading';
+  slide.errorIllustration = undefined;
+  try {
+    slide.illustration = await illustration(store.baseUrl, slide.input);
+    slide.statusIllustration = 'success';
+    store.addLog(`第 ${store.currentIndex + 1} 页：已生成配图策略`);
+  } catch (e: any) {
+    slide.statusIllustration = 'error';
+    slide.errorIllustration = e?.message || String(e);
+    store.addLog(`配图失败: ${slide.errorIllustration}`);
+  }
+}
 
 async function generateBoth() {
   const slide = currentSlide.value;
   if (!slide) return;
-  
-  slide.statusAnalyze = "loading";
-  slide.statusIllustration = "loading";
-  
+  slide.statusAnalyze = 'loading';
+  slide.statusIllustration = 'loading';
+  slide.errorAnalyze = undefined;
+  slide.errorIllustration = undefined;
   try {
     const [analyzeResp, illusResp] = await Promise.all([
       analyze(store.baseUrl, slide.input),
-      illustration(store.baseUrl, slide.input)
+      illustration(store.baseUrl, slide.input),
     ]);
     slide.analyze = analyzeResp;
     slide.illustration = illusResp;
-    slide.statusAnalyze = "success";
-    slide.statusIllustration = "success";
-    store.addLog(`第 ${store.currentIndex + 1} 页生成成功`);
+    slide.statusAnalyze = 'success';
+    slide.statusIllustration = 'success';
+    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
   } catch (e: any) {
-    slide.statusAnalyze = "error";
-    slide.statusIllustration = "error";
-    store.addLog(`生成失败: ${e?.message}`);
+    slide.statusAnalyze = 'error';
+    slide.statusIllustration = 'error';
+    const msg = e?.message || String(e);
+    slide.errorAnalyze = msg;
+    slide.errorIllustration = msg;
+    store.addLog(`生成失败: ${msg}`);
   }
 }
+
+const chartBusy = computed(() => currentSlide.value?.statusAnalyze === 'loading');
+const illusBusy = computed(() => currentSlide.value?.statusIllustration === 'loading');
+const anyBusy = computed(() => chartBusy.value || illusBusy.value);
 
 function updateIllustration(next: { keywords: string[]; prompt: string }) {
   const slide = currentSlide.value;
@@ -57,7 +109,7 @@ function updateIllustration(next: { keywords: string[]; prompt: string }) {
           <div class="slide-num">{{ index + 1 }}</div>
           <div class="slide-info">
             <div class="slide-title">{{ slide.input.topic }}</div>
-            <div class="slide-status">{{ slide.statusAnalyze === 'success' ? '✅ 已生成' : '🕒 待处理' }}</div>
+            <div class="slide-status">{{ slideStatusShort(slide) }}</div>
           </div>
         </div>
       </div>
@@ -67,28 +119,61 @@ function updateIllustration(next: { keywords: string[]; prompt: string }) {
     <main class="content">
       <div v-if="currentSlide" class="editor-panel">
         <div class="editor-header">
-          <input v-model="currentSlide.input.topic" class="title-input" placeholder="输入页面主题..." />
+          <input v-model="currentSlide.input.topic" class="title-input" placeholder="本页标题（一句话，会作为图表标题）" />
           <div class="header-actions">
             <select v-model="currentSlide.input.mode" class="select-input">
               <option value="auto">自动模式 (Auto)</option>
               <option value="mock">规则模式 (Mock)</option>
               <option value="deepseek">DeepSeek 模式</option>
             </select>
-            <button class="btn primary" @click="generateBoth" :disabled="currentSlide.statusAnalyze === 'loading'">
-              <span v-if="currentSlide.statusAnalyze === 'loading'" class="btn-spinner"></span>
-              {{ currentSlide.statusAnalyze === 'loading' ? '正在分析...' : '一键生成' }}
-            </button>
+            <div class="gen-btns">
+              <button
+                type="button"
+                class="btn chart-only"
+                :disabled="anyBusy"
+                @click="generateChartOnly"
+              >
+                <span v-if="chartBusy" class="btn-spinner dark"></span>
+                仅数据图表
+              </button>
+              <button
+                type="button"
+                class="btn illus-only"
+                :disabled="anyBusy"
+                @click="generateIllusOnly"
+              >
+                <span v-if="illusBusy" class="btn-spinner illus-spin"></span>
+                仅文生图策略
+              </button>
+              <button type="button" class="btn primary" :disabled="anyBusy" @click="generateBoth">
+                <span v-if="chartBusy && illusBusy" class="btn-spinner"></span>
+                图表 + 配图
+              </button>
+            </div>
           </div>
         </div>
-        
+        <p class="gen-hint">
+          与顶部独立子页一致：数据图表走左侧「智能图表」；文生图走右侧「视觉插图」。专项实验请打开
+          <strong>图表意图</strong>、<strong>图表代码</strong>或<strong>配图 Prompt</strong>。
+        </p>
+
         <div class="form-grid">
           <div class="form-item full">
-            <label>📝 正文内容 (Body)</label>
-            <textarea v-model="currentSlide.input.body" class="body-editor" placeholder="输入页面文字内容..."></textarea>
+            <label>📝 页面正文 (叙事 / 要点)</label>
+            <p class="field-hint">放讲解性文字：背景、结论、子弹要点。不必重复具体数字，数字建议写在下方「结构化数据」。</p>
+            <textarea v-model="currentSlide.input.body" class="body-editor" placeholder="例如：本页对比各产品线在 Q3 的核心经营指标……"></textarea>
           </div>
           <div class="form-item">
-            <label>📊 数据描述 (Data Description - 可选)</label>
-            <textarea v-model="currentSlide.input.data_description" class="data-editor" placeholder="例如: 2021年销量100, 2022年销量150..."></textarea>
+            <label>📊 结构化数据（可选，强烈建议填）</label>
+            <p class="field-hint">
+              与图表直接对应的一行式数据。多实体用分号「；」分隔；每行格式「实体名：指标A 数值，指标B 数值%」。
+              与正文合并参与分析，拆开放更清晰、解析更稳。
+            </p>
+            <textarea
+              v-model="currentSlide.input.data_description"
+              class="data-editor"
+              placeholder="例：手机：营收 3200，毛利率 22%，渠道占比 40%；笔记本：营收 2100，毛利率 18%，渠道占比 28%"
+            ></textarea>
           </div>
           <div class="form-item">
             <label>📑 幻灯片类型</label>
@@ -110,19 +195,19 @@ function updateIllustration(next: { keywords: string[]; prompt: string }) {
         
         <div v-if="!currentSlide?.analyze && !currentSlide?.illustration" class="empty-state">
           <div class="empty-icon">💡</div>
-          <p>请在上方编辑内容并点击“一键生成”</p>
-          <span>我们将为您自动生成 ECharts 图表和插图建议</span>
+          <p>请编辑内容后选择生成方式</p>
+          <span>可仅生成数据图表、仅生成文生图策略，或两者一起生成</span>
         </div>
 
         <div v-else class="preview-grid">
           <div class="preview-card chart-area">
             <div class="card-header">📊 智能图表推荐</div>
             <div class="card-body">
-              <ResultPanel 
-                :slide="currentSlide" 
-                :onRerunChart="generateBoth" 
-                :onRerunIllustration="generateBoth" 
-                :onRerunBoth="generateBoth" 
+              <ResultPanel
+                :slide="currentSlide"
+                :onRerunChart="generateChartOnly"
+                :onRerunIllustration="generateIllusOnly"
+                :onRerunBoth="generateBoth"
                 :onChangeIllustration="updateIllustration"
               />
             </div>
@@ -207,12 +292,54 @@ function updateIllustration(next: { keywords: string[]; prompt: string }) {
 .title-input:hover { background: #f8fafc; }
 .title-input:focus { background: #f8fafc; box-shadow: inset 0 0 0 2px #1f9d60; }
 
-.header-actions { display: flex; gap: 12px; align-items: center; }
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.gen-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.gen-hint {
+  margin: 0 0 20px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  padding: 0 4px;
+}
+.btn.chart-only {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #7dd3fc;
+}
+.btn.illus-only {
+  background: #f3e8ff;
+  color: #6b21a8;
+  border: 1px solid #d8b4fe;
+}
+.btn.chart-only:disabled,
+.btn.illus-only:disabled {
+  opacity: 0.5;
+}
+.btn-spinner.dark {
+  border-color: rgba(3, 105, 161, 0.25);
+  border-top-color: #0369a1;
+}
+.btn-spinner.illus-spin {
+  border-color: rgba(107, 33, 168, 0.25);
+  border-top-color: #6b21a8;
+}
 
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .form-item { display: flex; flex-direction: column; gap: 8px; }
 .form-item.full { grid-column: span 2; }
 .form-item label { font-size: 13px; font-weight: 700; color: #475569; padding-left: 4px; }
+.field-hint { margin: 0; font-size: 12px; line-height: 1.45; color: #64748b; font-weight: 500; padding-left: 4px; }
 
 .body-editor, .data-editor, .select-input { 
   width: 100%; 

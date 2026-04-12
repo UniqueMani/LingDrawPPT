@@ -12,6 +12,17 @@ const props = defineProps<{
 }>();
 
 const illus = computed(() => props.slide.illustration?.illustration);
+
+const tablePreview = computed(() => {
+  const chart = props.slide.analyze?.chart;
+  if (!chart || chart.chartType !== "data_table") return null;
+  const ex = chart.extracted || {};
+  const columns = ex.columns;
+  const rows = ex.rows;
+  if (!Array.isArray(columns) || !Array.isArray(rows)) return null;
+  return { columns: columns as string[], rows: rows as unknown[][] };
+});
+
 const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1280);
 const handleResize = () => {
   viewportWidth.value = window.innerWidth;
@@ -78,6 +89,9 @@ onBeforeUnmount(() => {
             <span class="pill">chart: {{ slide.analyze?.chart?.chartType }}</span>
           </div>
           <div class="reason">{{ slide.analyze?.chart?.reason }}</div>
+          <div v-if="slide.analyze?.semantic && slide.analyze.semantic.confidence != null" class="conf">
+            规则置信度（无 LLM 时）：{{ (slide.analyze.semantic.confidence * 100).toFixed(0) }}%
+          </div>
           <details class="details">
             <summary>查看 extracted</summary>
             <pre class="pre">{{ JSON.stringify(slide.analyze?.chart?.extracted || {}, null, 2) }}</pre>
@@ -90,7 +104,22 @@ onBeforeUnmount(() => {
         <div class="cardTitle">图表预览</div>
         <div v-if="slide.statusAnalyze === 'loading'" class="muted">加载中…</div>
         <div v-else class="chartWrap">
+          <div v-if="tablePreview" class="tableWrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th v-for="(c, i) in tablePreview.columns" :key="i">{{ c }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, ri) in tablePreview.rows" :key="ri">
+                  <td v-for="(cell, ci) in row" :key="ci">{{ cell ?? "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <ChartPreview
+            v-else
             :option="slide.analyze?.chart?.echartsOption"
             :width="chartWidth"
             :height="420"
@@ -188,6 +217,9 @@ onBeforeUnmount(() => {
 .intent-badge.chart .val { color: #2563eb; }
 
 .reason-box { background: #f8fafc; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.5; color: #334155; border-left: 4px solid #1f9d60; margin-bottom: 16px; }
+.conf { font-size: 12px; color: #64748b; margin: 8px 0 0; }
+.tableWrap { overflow-x: auto; max-width: 100%; }
+.chartWrap .data-table { margin-top: 0; }
 
 .extracted-section { margin-top: 16px; }
 .section-subtitle { font-size: 12px; font-weight: 700; color: #64748b; margin-bottom: 8px; }

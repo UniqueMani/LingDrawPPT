@@ -1,5 +1,4 @@
 import re
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -173,4 +172,139 @@ def parse_hierarchy_chain(text: str) -> List[str]:
             if parts:
                 return parts
     return []
+
+
+_ENTITY_SKIP = frozenset(
+    {
+        "单位",
+        "本页",
+        "如下",
+        "其中",
+        "说明",
+        "注",
+        "数据来源",
+    }
+)
+
+
+def _is_skipped_entity(name: str) -> bool:
+    n = (name or "").strip()
+    n = re.sub(r"\s+", "", n)
+    if len(n) < 2 or len(n) > 28:
+        return True
+    if n in _ENTITY_SKIP or n.startswith("单位"):
+        return True
+    if re.fullmatch(r"[\d\s\./%万元]+", n):
+        return True
+    return False
+
+
+def _parse_row_metric_pairs(body: str) -> Dict[str, float]:
+    """解析单行内「指标名 数值[可选%]」，以逗号/顿号分隔。"""
+    out: Dict[str, float] = {}
+    body = (body or "").strip()
+    if not body:
+        return out
+    for p in re.split(r"[，,、]", body):
+        p = p.strip()
+        if not p:
+            continue
+        m = re.search(r"(.+?)\s*(-?\d+(?:\.\d+)?)\s*%?\s*$", p)
+        if not m:
+            continue
+        label = m.group(1).strip()
+        val = float(m.group(2))
+        label = re.sub(r"[（(].*?[）)]", "", label).strip()
+        if label and not re.fullmatch(r"[\d\.]+", label):
+            out[label] = val
+    return out
+
+
+def extract_entity_metric_blocks(text: str) -> List[Tuple[str, str]]:
+    """
+    提取「实体：指标串」块。支持前文说明 + 分号分隔的多实体（如多产品线）。
+    """
+    text = text or ""
+    out: List[Tuple[str, str]] = []
+    for m in re.finditer(
+        r"([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·\-\s]{1,28}?)[：:]\s*",
+        text,
+    ):
+        entity = re.sub(r"\s+", "", m.group(1).strip())
+        if _is_skipped_entity(entity):
+            continue
+        start = m.end()
+        rest = text[start:]
+        stop = re.search(
+            r"(?=[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·\-\s]{1,28}?[：:])|[；;]",
+            rest,
+        )
+        chunk = rest[: stop.start()] if stop else rest
+        chunk = chunk.strip().rstrip("，,")
+        if chunk:
+            out.append((entity, chunk))
+    return out
+
+
+def parse_entity_metric_grid(text: str) -> Optional[Dict[str, Any]]:
+    """
+    多实体 × 多指标（类表格）解析。满足：至少 2 个实体，且每个实体至少 2 个指标。
+    """
+    blocks = extract_entity_metric_blocks(text)
+    row_dicts: List[Dict[str, float]] = []
+    categories: List[str] = []
+    for entity, body in blocks:
+        metrics_here = _parse_row_metric_pairs(body)
+        if len(metrics_here) < 2:
+            continue
+        categories.append(entity)
+        row_dicts.append(metrics_here)
+
+    if len(categories) < 2:
+        return None
+
+    metric_keys: List[str] = []
+    seen: set[str] = set()
+    for rd in row_dicts:
+        for k in rd.keys():
+            if k not in seen:
+                seen.add(k)
+                metric_keys.append(k)
+
+    if len(metric_keys) < 2:
+        return None
+
+    matrix: List[List[Optional[float]]] = []
+    for rd in row_dicts:
+        matrix.append([rd.get(k) for k in metric_keys])
+
+    return {
+        "categories": categories,
+        "metrics": metric_keys,
+        "matrix": matrix,
+    }
+
+
+def grid_to_grouped_series_extracted(grid: Dict[str, Any]) -> Dict[str, Any]:
+    """将网格结果转为分组柱状图所需的 extracted。"""
+    categories = [str(x) for x in grid.get("categories") or []]
+    metrics = [str(x) for x in grid.get("metrics") or []]
+    matrix = grid.get("matrix") or []
+    series: List[Dict[str, Any]] = []
+    pct_hints = ("率", "占比", "比例", "份额", "环比", "同比")
+    revenue_like = frozenset({"营收", "收入", "销售额", "销量", "成本", "费用", "金额"})
+
+    for j, name in enumerate(metrics):
+        col: List[Optional[float]] = [row[j] if j < len(row) else None for row in matrix]
+        values = [float(v) if v is not None else 0.0 for v in col]
+        lower = name.lower()
+        if name in revenue_like:
+            y_axis = 0
+        elif any(h in name for h in pct_hints) or "percent" in lower:
+            y_axis = 1
+        else:
+            y_axis = 0
+        series.append({"name": name, "values": values, "yAxisIndex": y_axis})
+
+    return {"categories": categories, "series": series}
 
