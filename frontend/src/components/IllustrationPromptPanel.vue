@@ -2,16 +2,10 @@
 import { ref } from "vue";
 import { store } from "../store";
 import { vizLabIllustration } from "../api/client";
-import SlideInputForm from "../components/SlideInputForm.vue";
+import SlideInputForm from "./SlideInputForm.vue";
 import type { SlideRequest, VizLabIllustrationResponse } from "../types";
 
-const slide = ref<SlideRequest>({
-  topic: "",
-  body: "",
-  data_description: "",
-  slide_type: "content",
-  mode: "auto",
-});
+const slide = defineModel<SlideRequest>("slide", { required: true });
 
 const imageModel = ref<"flux" | "sd" | "other">("flux");
 const styleRefUrl = ref("");
@@ -43,15 +37,7 @@ async function run() {
 </script>
 
 <template>
-  <div class="page">
-    <header class="hero">
-      <h1>语义配图与文生图 Prompt</h1>
-      <p class="lead">
-        根据页面主题与正文摘要生成<strong>关键词</strong>与<strong>文生图 Prompt</strong>，并记录目标模型（FLUX / SD）、风格参考图
-        URL、LoRA 提示等实验字段，便于你对接真实出图 API、IP-Adapter 与风格一致性实验。本页<strong>不生成数据图表</strong>。
-      </p>
-    </header>
-
+  <div class="panel-root">
     <div class="panel">
       <h2>页面内容</h2>
       <SlideInputForm v-model="slide" />
@@ -107,48 +93,22 @@ async function run() {
     </div>
 
     <p class="foot">
-      若需先做数据图表，请使用顶部<strong>「图表意图」</strong>或<strong>「图表代码」</strong>；流水线整合可在<strong>工作台</strong>分按钮执行。
+      若需先做数据图表，请使用<strong>「图表意图」</strong>或<strong>「图表代码」</strong>。
     </p>
   </div>
 </template>
 
 <style scoped>
-.page {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 28px 24px 48px;
-}
-.hero {
-  margin-bottom: 24px;
-}
-.tag {
-  display: inline-block;
-  margin: 0 0 10px;
-  font-size: 11px;
-  font-weight: 800;
-  color: #86198f;
-  background: #fae8ff;
-  padding: 4px 10px;
-  border-radius: 6px;
-}
-.hero h1 {
-  margin: 0 0 12px;
-  font-size: 28px;
-  font-weight: 800;
-  color: #0f172a;
-}
-.lead {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1.65;
-  color: #475569;
+.panel-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .panel {
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 16px;
   padding: 22px 24px;
-  margin-bottom: 18px;
 }
 .panel h2 {
   margin: 0 0 16px;

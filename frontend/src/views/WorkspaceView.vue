@@ -1,35 +1,197 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { store } from '../store';
-import { analyze, illustration } from '../api/client';
-import ResultPanel from '../components/ResultPanel.vue';
-import type { SlideState } from '../types';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { store } from "../store";
+import { analyze, extractText, illustration } from "../api/client";
+import ChartIntentPanel from "../components/ChartIntentPanel.vue";
+import ChartCodePanel from "../components/ChartCodePanel.vue";
+import IllustrationPromptPanel from "../components/IllustrationPromptPanel.vue";
+import ResultPanel from "../components/ResultPanel.vue";
+import type { SlideRequest } from "../types";
 
-const currentSlide = computed(() => store.slides[store.currentIndex]);
+type FunctionMode = "preview" | "intent" | "code" | "illustration";
 
-function slideStatusShort(sl: SlideState) {
+const functionMode = ref<FunctionMode>("preview");
+const fileInput = ref<HTMLInputElement | null>(null);
+const uploadLoading = ref(false);
+const uploadMessage = ref("");
+
+const previewBodyRef = ref<HTMLElement | null>(null);
+const selectedSnippet = ref("");
+
+/** 文档缩放档位（类似 PDF 阅读器） */
+const zoomSteps = [0.82, 0.88, 1, 1.12, 1.24] as const;
+const zoomIdx = ref(2);
+const zoomScale = computed(() => zoomSteps[zoomIdx.value] ?? 1);
+const zoomPercent = computed(() => Math.round(zoomScale.value * 100));
+
+function zoomIn() {
+  if (zoomIdx.value < zoomSteps.length - 1) zoomIdx.value += 1;
+}
+
+function zoomOut() {
+  if (zoomIdx.value > 0) zoomIdx.value -= 1;
+}
+
+/** 左侧：文档版式 vs 纯解析文本 */
+const leftTab = ref<"document" | "parsed">("document");
+/** 右侧：配图操作 vs 生成流水线 */
+const rightTab = ref<"fig" | "gen">("fig");
+
+const currentSlide = computed(() => store.slides[store.currentIndex] ?? null);
+const hasDoc = computed(() => store.slides.length > 0);
+const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
+const canPrev = computed(() => store.currentIndex > 0);
+const canNext = computed(() => store.currentIndex < store.slides.length - 1);
+
+function newId() {
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function createInputFromPage(title: string, text: string): SlideRequest {
+  return { topic: title || "未命名页面", body: text || "", data_description: "", slide_type: "content", mode: "auto" };
+}
+
+async function onPickFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  uploadLoading.value = true;
+  uploadMessage.value = "正在解析文档...";
+  try {
+    const resp = await extractText(store.baseUrl, file);
+    store.docName = resp.filename;
+    store.slides = [];
+
+    const pages =
+      resp.pages_detail.length > 0 ? resp.pages_detail : [{ page: 1, title: resp.title || "第1页", text: resp.text }];
+
+    for (const p of pages) {
+      store.slides.push({
+        id: `${newId()}_${p.page}`,
+        input: createInputFromPage(p.title || `第 ${p.page} 页`, p.text || ""),
+        statusAnalyze: "idle",
+        statusIllustration: "idle",
+        history: [],
+      });
+    }
+    store.currentIndex = 0;
+    functionMode.value = "preview";
+    selectedSnippet.value = "";
+    zoomIdx.value = 2;
+    leftTab.value = "document";
+    rightTab.value = "fig";
+    store.addLog(`成功上传并解析文件: ${resp.filename}，共 ${store.slides.length} 页`);
+  } catch (e: any) {
+    uploadMessage.value = e?.message || "上传失败";
+  } finally {
+    uploadLoading.value = false;
+    input.value = "";
+  }
+}
+
+function triggerFilePick() {
+  fileInput.value?.click();
+}
+
+function resetDocument() {
+  if (!hasDoc.value) return;
+  store.slides = [];
+  store.currentIndex = 0;
+  store.docName = "";
+  functionMode.value = "preview";
+  selectedSnippet.value = "";
+  zoomIdx.value = 2;
+  store.addLog("已清除当前文档，可重新上传");
+}
+
+function prevPage() {
+  if (canPrev.value) {
+    store.currentIndex -= 1;
+    selectedSnippet.value = "";
+  }
+}
+
+function nextPage() {
+  if (canNext.value) {
+    store.currentIndex += 1;
+    selectedSnippet.value = "";
+  }
+}
+
+function goToPage(i: number) {
+  if (i < 0 || i >= store.slides.length) return;
+  store.currentIndex = i;
+  selectedSnippet.value = "";
+}
+
+function captureSelection() {
+  const root = previewBodyRef.value;
+  if (!root) return;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const text = sel.toString().trim();
+  if (!text) return;
+
+  const anchor = sel.anchorNode;
+  const focusNode = sel.focusNode;
+  const endEl = (focusNode?.nodeType === Node.TEXT_NODE ? focusNode.parentElement : focusNode) as Node | null;
+  const startEl = (anchor?.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) as Node | null;
+  if (!startEl || !endEl) return;
+  if (!root.contains(startEl) || !root.contains(endEl)) return;
+
+  selectedSnippet.value = text;
+}
+
+function applySelectionAsRequirement() {
+  const slide = currentSlide.value;
+  if (!slide || !selectedSnippet.value.trim()) return;
+  slide.input.body = selectedSnippet.value.trim();
+  store.addLog(`已将选中文字写入第 ${store.currentIndex + 1} 页「正文 / 需求」`);
+}
+
+function goToFunction(mode: Exclude<FunctionMode, "preview">) {
+  functionMode.value = mode;
+}
+
+function backToPreview() {
+  functionMode.value = "preview";
+}
+
+function onPreviewKeydown(e: KeyboardEvent) {
+  if (functionMode.value !== "preview") return;
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    prevPage();
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    nextPage();
+  }
+}
+
+function slideStatusShort(sl: (typeof store.slides)[0]) {
   const c =
-    sl.statusAnalyze === 'success' ? '图表✓' : sl.statusAnalyze === 'loading' ? '图表…' : '图表—';
+    sl.statusAnalyze === "success" ? "图表✓" : sl.statusAnalyze === "loading" ? "图表…" : "图表—";
   const i =
-    sl.statusIllustration === 'success'
-      ? '配图✓'
-      : sl.statusIllustration === 'loading'
-        ? '配图…'
-        : '配图—';
+    sl.statusIllustration === "success"
+      ? "配图✓"
+      : sl.statusIllustration === "loading"
+        ? "配图…"
+        : "配图—";
   return `${c} · ${i}`;
 }
 
 async function generateChartOnly() {
   const slide = currentSlide.value;
   if (!slide) return;
-  slide.statusAnalyze = 'loading';
+  slide.statusAnalyze = "loading";
   slide.errorAnalyze = undefined;
   try {
     slide.analyze = await analyze(store.baseUrl, slide.input);
-    slide.statusAnalyze = 'success';
+    slide.statusAnalyze = "success";
     store.addLog(`第 ${store.currentIndex + 1} 页：已生成数据图表`);
   } catch (e: any) {
-    slide.statusAnalyze = 'error';
+    slide.statusAnalyze = "error";
     slide.errorAnalyze = e?.message || String(e);
     store.addLog(`图表失败: ${slide.errorAnalyze}`);
   }
@@ -38,14 +200,14 @@ async function generateChartOnly() {
 async function generateIllusOnly() {
   const slide = currentSlide.value;
   if (!slide) return;
-  slide.statusIllustration = 'loading';
+  slide.statusIllustration = "loading";
   slide.errorIllustration = undefined;
   try {
     slide.illustration = await illustration(store.baseUrl, slide.input);
-    slide.statusIllustration = 'success';
+    slide.statusIllustration = "success";
     store.addLog(`第 ${store.currentIndex + 1} 页：已生成配图策略`);
   } catch (e: any) {
-    slide.statusIllustration = 'error';
+    slide.statusIllustration = "error";
     slide.errorIllustration = e?.message || String(e);
     store.addLog(`配图失败: ${slide.errorIllustration}`);
   }
@@ -54,8 +216,8 @@ async function generateIllusOnly() {
 async function generateBoth() {
   const slide = currentSlide.value;
   if (!slide) return;
-  slide.statusAnalyze = 'loading';
-  slide.statusIllustration = 'loading';
+  slide.statusAnalyze = "loading";
+  slide.statusIllustration = "loading";
   slide.errorAnalyze = undefined;
   slide.errorIllustration = undefined;
   try {
@@ -65,12 +227,12 @@ async function generateBoth() {
     ]);
     slide.analyze = analyzeResp;
     slide.illustration = illusResp;
-    slide.statusAnalyze = 'success';
-    slide.statusIllustration = 'success';
+    slide.statusAnalyze = "success";
+    slide.statusIllustration = "success";
     store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
   } catch (e: any) {
-    slide.statusAnalyze = 'error';
-    slide.statusIllustration = 'error';
+    slide.statusAnalyze = "error";
+    slide.statusIllustration = "error";
     const msg = e?.message || String(e);
     slide.errorAnalyze = msg;
     slide.errorIllustration = msg;
@@ -78,8 +240,8 @@ async function generateBoth() {
   }
 }
 
-const chartBusy = computed(() => currentSlide.value?.statusAnalyze === 'loading');
-const illusBusy = computed(() => currentSlide.value?.statusIllustration === 'loading');
+const chartBusy = computed(() => currentSlide.value?.statusAnalyze === "loading");
+const illusBusy = computed(() => currentSlide.value?.statusIllustration === "loading");
 const anyBusy = computed(() => chartBusy.value || illusBusy.value);
 
 function updateIllustration(next: { keywords: string[]; prompt: string }) {
@@ -88,367 +250,1016 @@ function updateIllustration(next: { keywords: string[]; prompt: string }) {
   slide.illustration.illustration.keywords = next.keywords;
   slide.illustration.illustration.prompt = next.prompt;
 }
+
+/** 可拖拽调节左右栏比例（桌面横向分栏时显示分隔条） */
+const SPLITTER_PX = 6;
+/** 与下方 @media (max-width: 768px) 对齐：≤768 纵向堆叠，不显示拖拽条 */
+const SPLIT_LAYOUT_MIN_PX = 769;
+const SPLIT_RATIO_MIN = 0.18;
+const SPLIT_RATIO_MAX = 0.82;
+
+const workFullRef = ref<HTMLElement | null>(null);
+const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
+const splitRatio = ref(0.5);
+const isSplitDragging = ref(false);
+
+const splitLayoutHorizontal = computed(() => windowWidth.value >= SPLIT_LAYOUT_MIN_PX);
+
+const workFullStyle = computed(() => {
+  if (functionMode.value !== "preview") return {};
+  if (!splitLayoutHorizontal.value) {
+    return { display: "flex", flexDirection: "column" as const };
+  }
+  const L = splitRatio.value * 1000;
+  const R = (1 - splitRatio.value) * 1000;
+  return {
+    display: "grid",
+    gridTemplateColumns: `${L}fr ${SPLITTER_PX}px ${R}fr`,
+    alignItems: "stretch",
+  };
+});
+
+function updateSplitFromClientX(clientX: number) {
+  const el = workFullRef.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const inner = rect.width - SPLITTER_PX;
+  if (inner <= 0) return;
+  const pos = Math.min(Math.max(0, clientX - rect.left), inner);
+  let ratio = pos / inner;
+  ratio = Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, ratio));
+  splitRatio.value = ratio;
+}
+
+function onSplitPointerMove(e: PointerEvent) {
+  if (!isSplitDragging.value) return;
+  updateSplitFromClientX(e.clientX);
+}
+
+function endSplitDrag() {
+  if (!isSplitDragging.value) return;
+  isSplitDragging.value = false;
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+  window.removeEventListener("pointermove", onSplitPointerMove);
+  window.removeEventListener("pointerup", endSplitDrag);
+  window.removeEventListener("pointercancel", endSplitDrag);
+}
+
+function startSplitDrag(e: PointerEvent) {
+  if (functionMode.value !== "preview" || !splitLayoutHorizontal.value) return;
+  e.preventDefault();
+  isSplitDragging.value = true;
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  updateSplitFromClientX(e.clientX);
+  window.addEventListener("pointermove", onSplitPointerMove);
+  window.addEventListener("pointerup", endSplitDrag);
+  window.addEventListener("pointercancel", endSplitDrag);
+}
+
+function onWindowResize() {
+  windowWidth.value = window.innerWidth;
+  if (window.innerWidth < SPLIT_LAYOUT_MIN_PX) endSplitDrag();
+}
+
+function previewKeydownSplitAware(e: KeyboardEvent) {
+  if (isSplitDragging.value && e.key === "Escape") {
+    e.preventDefault();
+    endSplitDrag();
+    return;
+  }
+  onPreviewKeydown(e);
+}
+
+watch(
+  () => functionMode.value,
+  () => {
+    endSplitDrag();
+  },
+);
+
+onMounted(() => {
+  window.addEventListener("keydown", previewKeydownSplitAware);
+  window.addEventListener("resize", onWindowResize);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", previewKeydownSplitAware);
+  window.removeEventListener("resize", onWindowResize);
+  endSplitDrag();
+});
 </script>
 
 <template>
-  <div class="workspace-layout">
-    <!-- 左侧幻灯片列表骨架 -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <h3>页面列表</h3>
-        <p>{{ store.docName }}</p>
-      </div>
-      <div class="slide-list">
-        <div 
-          v-for="(slide, index) in store.slides" 
-          :key="slide.id" 
-          class="slide-item" 
-          :class="{ active: index === store.currentIndex }"
-          @click="store.currentIndex = index"
-        >
-          <div class="slide-num">{{ index + 1 }}</div>
-          <div class="slide-info">
-            <div class="slide-title">{{ slide.input.topic }}</div>
-            <div class="slide-status">{{ slideStatusShort(slide) }}</div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- 中间核心操作区 -->
-    <main class="content">
-      <div v-if="currentSlide" class="editor-panel">
-        <div class="editor-header">
-          <input v-model="currentSlide.input.topic" class="title-input" placeholder="本页标题（一句话，会作为图表标题）" />
-          <div class="header-actions">
-            <select v-model="currentSlide.input.mode" class="select-input">
-              <option value="auto">自动模式 (Auto)</option>
-              <option value="mock">规则模式 (Mock)</option>
-              <option value="deepseek">DeepSeek 模式</option>
-            </select>
-            <div class="gen-btns">
-              <button
-                type="button"
-                class="btn chart-only"
-                :disabled="anyBusy"
-                @click="generateChartOnly"
-              >
-                <span v-if="chartBusy" class="btn-spinner dark"></span>
-                仅数据图表
-              </button>
-              <button
-                type="button"
-                class="btn illus-only"
-                :disabled="anyBusy"
-                @click="generateIllusOnly"
-              >
-                <span v-if="illusBusy" class="btn-spinner illus-spin"></span>
-                仅文生图策略
-              </button>
-              <button type="button" class="btn primary" :disabled="anyBusy" @click="generateBoth">
-                <span v-if="chartBusy && illusBusy" class="btn-spinner"></span>
-                图表 + 配图
-              </button>
-            </div>
-          </div>
-        </div>
-        <p class="gen-hint">
-          与顶部独立子页一致：数据图表走左侧「智能图表」；文生图走右侧「视觉插图」。专项实验请打开
-          <strong>图表意图</strong>、<strong>图表代码</strong>或<strong>配图 Prompt</strong>。
+  <div class="workspace-root">
+    <div v-if="!hasDoc" class="upload-phase">
+      <div class="upload-card">
+        <p class="upload-badge">第一步</p>
+        <h2>上传 PDF 或 PPT</h2>
+        <p class="upload-lead">
+          支持 .pptx 与 .pdf。解析后左侧为全宽文档预览，右侧为翻页、缩放、配图与生成等全部操作。
         </p>
 
-        <div class="form-grid">
-          <div class="form-item full">
-            <label>📝 页面正文 (叙事 / 要点)</label>
-            <p class="field-hint">放讲解性文字：背景、结论、子弹要点。不必重复具体数字，数字建议写在下方「结构化数据」。</p>
-            <textarea v-model="currentSlide.input.body" class="body-editor" placeholder="例如：本页对比各产品线在 Q3 的核心经营指标……"></textarea>
+        <div class="drop-zone" @click="triggerFilePick">
+          <div v-if="!uploadLoading" class="hint">
+            <span class="icon">📁</span>
+            <span>点击选择文件</span>
           </div>
-          <div class="form-item">
-            <label>📊 结构化数据（可选，强烈建议填）</label>
-            <p class="field-hint">
-              与图表直接对应的一行式数据。多实体用分号「；」分隔；每行格式「实体名：指标A 数值，指标B 数值%」。
-              与正文合并参与分析，拆开放更清晰、解析更稳。
-            </p>
-            <textarea
-              v-model="currentSlide.input.data_description"
-              class="data-editor"
-              placeholder="例：手机：营收 3200，毛利率 22%，渠道占比 40%；笔记本：营收 2100，毛利率 18%，渠道占比 28%"
-            ></textarea>
-          </div>
-          <div class="form-item">
-            <label>📑 幻灯片类型</label>
-            <select v-model="currentSlide.input.slide_type" class="select-input block">
-              <option value="content">内容页 (Content)</option>
-              <option value="cover">封面页 (Cover)</option>
-              <option value="section-divider">分隔页 (Section Divider)</option>
-            </select>
+          <div v-else class="loader">
+            <div class="spinner"></div>
+            <p>{{ uploadMessage }}</p>
           </div>
         </div>
+
+        <input ref="fileInput" type="file" accept=".pptx,.pdf" class="hidden" @change="onPickFile" />
+
+        <p v-if="uploadMessage && !uploadLoading" class="msg">{{ uploadMessage }}</p>
       </div>
+    </div>
 
-      <!-- 结果展示区域 -->
-      <div class="results-container">
-        <div class="section-title">
-          <span class="title-icon">✨</span>
-          生成结果预览
-        </div>
-        
-        <div v-if="!currentSlide?.analyze && !currentSlide?.illustration" class="empty-state">
-          <div class="empty-icon">💡</div>
-          <p>请编辑内容后选择生成方式</p>
-          <span>可仅生成数据图表、仅生成文生图策略，或两者一起生成</span>
-        </div>
-
-        <div v-else class="preview-grid">
-          <div class="preview-card chart-area">
-            <div class="card-header">📊 智能图表推荐</div>
-            <div class="card-body">
-              <ResultPanel
-                :slide="currentSlide"
-                :onRerunChart="generateChartOnly"
-                :onRerunIllustration="generateIllusOnly"
-                :onRerunBoth="generateBoth"
-                :onChangeIllustration="updateIllustration"
-              />
+    <div v-else ref="workFullRef" class="work-full" :style="workFullStyle">
+      <template v-if="functionMode === 'preview'">
+        <!-- 左：仅文档预览区（PDF 式纸张） -->
+        <section class="reader-column" aria-label="文档预览">
+          <div class="reader-viewport reader-viewport--solo">
+            <div class="paper-scale" :style="{ transform: `scale(${zoomScale})` }">
+              <article class="paper">
+                <p v-if="leftTab === 'document'" class="paper-kicker">阅读视图 · 文本来自解析结果（非嵌入式 PDF 二进制）</p>
+                <p v-else class="paper-kicker muted">解析文本 · 便于对照复制</p>
+                <h2 class="paper-title">{{ currentSlide?.input.topic }}</h2>
+                <div
+                  ref="previewBodyRef"
+                  class="paper-body selectable"
+                  :class="{ 'paper-body--cols': leftTab === 'document', 'paper-body--parsed': leftTab === 'parsed' }"
+                  @mouseup="captureSelection"
+                >
+                  {{ currentSlide?.input.body || "（本页无正文）" }}
+                </div>
+                <div v-if="currentSlide?.input.data_description" class="paper-extra">
+                  <span class="paper-extra-label">结构化数据</span>
+                  <pre class="paper-extra-pre">{{ currentSlide.input.data_description }}</pre>
+                </div>
+              </article>
             </div>
           </div>
+        </section>
 
-          <div class="preview-card illustration-area">
-            <div class="card-header">🎨 视觉插图建议</div>
-            <div class="card-body">
-              <div v-if="currentSlide.illustration" class="illus-info">
-                <div class="info-group">
-                  <label>关键词</label>
-                  <div class="tag-cloud">
-                    <span v-for="kw in currentSlide.illustration.illustration.keywords" :key="kw" class="tag">{{ kw }}</span>
-                  </div>
-                </div>
-                <div class="info-group">
-                  <label>生成提示词 (Prompt)</label>
-                  <div class="prompt-text">{{ currentSlide.illustration.illustration.prompt }}</div>
-                </div>
-                <div class="image-placeholder">
-                  <span class="placeholder-icon">🖼️</span>
-                  <span>AI 图片生成预留位</span>
-                </div>
+        <div
+          v-if="splitLayoutHorizontal"
+          class="pane-splitter"
+          :class="{ dragging: isSplitDragging }"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调节左右栏宽度"
+          title="拖动调节左右栏宽度"
+          @pointerdown="startSplitDrag"
+        />
+
+        <!-- 右：视图切换、导航、缩放与全部操作 -->
+        <aside class="tools-column">
+          <div class="pane-tabs doc-view-tabs">
+            <button type="button" class="pane-tab" :class="{ active: leftTab === 'document' }" @click="leftTab = 'document'">
+              文档
+            </button>
+            <button type="button" class="pane-tab" :class="{ active: leftTab === 'parsed' }" @click="leftTab = 'parsed'">
+              解析文本
+            </button>
+          </div>
+
+          <header class="preview-toolbar">
+            <div class="tb-left">
+              <span class="tb-doc">{{ store.docName }}</span>
+              <span v-if="currentSlide" class="tb-status">{{ slideStatusShort(currentSlide) }}</span>
+            </div>
+            <div class="tb-center">
+              <button type="button" class="tb-icon" :disabled="!canPrev" title="上一页（←）" @click="prevPage">‹</button>
+              <span class="tb-page">第 {{ pageLabel }} 页</span>
+              <button type="button" class="tb-icon" :disabled="!canNext" title="下一页（→）" @click="nextPage">›</button>
+            </div>
+            <div class="tb-zoom" aria-label="缩放">
+              <button type="button" class="tb-zoom-btn" :disabled="zoomIdx <= 0" title="缩小" @click="zoomOut">−</button>
+              <span class="tb-zoom-val">{{ zoomPercent }}%</span>
+              <button
+                type="button"
+                class="tb-zoom-btn"
+                :disabled="zoomIdx >= zoomSteps.length - 1"
+                title="放大"
+                @click="zoomIn"
+              >
+                +
+              </button>
+            </div>
+            <button type="button" class="tb-replace" @click="resetDocument">更换文件</button>
+          </header>
+
+          <div class="page-chips" aria-label="页面">
+            <button
+              v-for="(s, i) in store.slides"
+              :key="s.id"
+              type="button"
+              class="page-chip"
+              :class="{ active: i === store.currentIndex }"
+              @click="goToPage(i)"
+            >
+              {{ i + 1 }}
+            </button>
+          </div>
+
+          <div class="pane-tabs tools-tabs">
+            <button type="button" class="pane-tab" :class="{ active: rightTab === 'fig' }" @click="rightTab = 'fig'">配图</button>
+            <button type="button" class="pane-tab" :class="{ active: rightTab === 'gen' }" @click="rightTab = 'gen'">生成</button>
+          </div>
+
+          <div class="tools-scroll">
+            <div v-show="rightTab === 'fig'" class="tools-section">
+              <p class="sec-label">选区与需求</p>
+              <div class="selection-row">
+                <div class="selection-preview">{{ selectedSnippet || "在左侧正文拖选文字…" }}</div>
+                <button type="button" class="btn-use" :disabled="!selectedSnippet.trim()" @click="applySelectionAsRequirement">
+                  写入本页正文
+                </button>
+              </div>
+              <p class="sec-label">功能入口</p>
+              <div class="jump-stack">
+                <button type="button" class="jump" @click="goToFunction('intent')">图表意图</button>
+                <button type="button" class="jump" @click="goToFunction('code')">图表代码</button>
+                <button type="button" class="jump" @click="goToFunction('illustration')">文生图配图</button>
               </div>
             </div>
+
+            <div v-show="rightTab === 'gen'" class="tools-section gen-section">
+              <p class="sec-label">经典流水线</p>
+              <p class="sec-hint">/api/analyze 与 /api/illustration</p>
+              <div class="pipeline-actions">
+                <button type="button" class="btn ghost" :disabled="anyBusy || !currentSlide" @click="generateChartOnly">
+                  <span v-if="chartBusy" class="btn-spinner wine-spin"></span>
+                  仅数据图表
+                </button>
+                <button type="button" class="btn ghost" :disabled="anyBusy || !currentSlide" @click="generateIllusOnly">
+                  <span v-if="illusBusy" class="btn-spinner wine-spin"></span>
+                  仅文生图策略
+                </button>
+                <button type="button" class="btn solid" :disabled="anyBusy || !currentSlide" @click="generateBoth">
+                  <span v-if="chartBusy && illusBusy" class="btn-spinner"></span>
+                  图表 + 配图
+                </button>
+              </div>
+              <div v-if="currentSlide && (currentSlide.analyze || currentSlide.illustration)" class="pipeline-result">
+                <ResultPanel
+                  :slide="currentSlide"
+                  :onRerunChart="generateChartOnly"
+                  :onRerunIllustration="generateIllusOnly"
+                  :onRerunBoth="generateBoth"
+                  :onChangeIllustration="updateIllustration"
+                />
+              </div>
+              <p v-else class="pipeline-empty">运行上方按钮后展示结果。</p>
+            </div>
           </div>
+        </aside>
+      </template>
+
+      <div v-else class="function-shell">
+        <header class="fn-toolbar">
+          <button type="button" class="fn-back" @click="backToPreview">← 返回文档阅读</button>
+          <span class="fn-title">{{
+            functionMode === "intent" ? "图表意图" : functionMode === "code" ? "图表代码" : "文生图配图"
+          }}</span>
+          <span class="fn-meta">第 {{ pageLabel }} 页 · {{ currentSlide?.input.topic }}</span>
+        </header>
+        <div class="fn-scroll">
+          <ChartIntentPanel v-if="functionMode === 'intent' && currentSlide" v-model:slide="currentSlide.input" />
+          <ChartCodePanel v-if="functionMode === 'code' && currentSlide" v-model:slide="currentSlide.input" />
+          <IllustrationPromptPanel
+            v-if="functionMode === 'illustration' && currentSlide"
+            v-model:slide="currentSlide.input"
+          />
         </div>
       </div>
-    </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.workspace-layout { display: flex; height: calc(100vh - 70px); background: #f1f5f9; }
-.sidebar { width: 320px; background: white; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; box-shadow: 4px 0 10px rgba(0,0,0,0.02); }
-.sidebar-header { padding: 24px; border-bottom: 1px solid #f1f5f9; }
-.sidebar-header h3 { margin: 0; color: #0f172a; font-size: 16px; font-weight: 800; }
-.sidebar-header p { margin: 8px 0 0; font-size: 12px; color: #64748b; font-weight: 500; }
-
-.slide-list { flex: 1; overflow-y: auto; padding: 12px; }
-.slide-item { display: flex; align-items: center; padding: 14px; border-radius: 12px; cursor: pointer; margin-bottom: 8px; border: 1px solid transparent; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-.slide-item:hover { background: #f8fafc; transform: translateX(4px); }
-.slide-item.active { background: #f0fdf4; border-color: #1f9d60; box-shadow: 0 4px 12px rgba(31, 157, 96, 0.08); }
-.slide-num { width: 28px; height: 28px; background: #f1f5f9; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; margin-right: 14px; color: #64748b; }
-.slide-item.active .slide-num { background: #1f9d60; color: white; }
-.slide-info { flex: 1; overflow: hidden; }
-.slide-title { font-size: 13px; font-weight: 700; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.slide-status { font-size: 11px; color: #94a3b8; margin-top: 4px; font-weight: 600; }
-
-.content { flex: 1; padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 24px; max-width: 1400px; margin: 0 auto; width: 100%; }
-
-.editor-panel { 
-  background: white; 
-  padding: 24px; 
-  border-radius: 16px; 
-  border: 1px solid #e2e8f0; 
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.04); 
-}
-
-.editor-header { 
-  display: flex; 
-  justify-content: space-between; 
-  align-items: center; 
-  margin-bottom: 24px; 
-  padding-bottom: 16px;
-  border-bottom: 1px solid #f1f5f9;
-  gap: 20px; 
-}
-
-.title-input { 
-  font-size: 22px; 
-  font-weight: 800; 
-  border: none; 
-  outline: none; 
-  flex: 1; 
-  color: #0f172a; 
-  padding: 4px 8px;
-  border-radius: 6px;
-  transition: all 0.2s;
-  background: transparent;
-}
-.title-input:hover { background: #f8fafc; }
-.title-input:focus { background: #f8fafc; box-shadow: inset 0 0 0 2px #1f9d60; }
-
-.header-actions {
+.workspace-root {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-}
-.gen-btns {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.gen-hint {
-  margin: 0 0 20px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-  padding: 0 4px;
-}
-.btn.chart-only {
-  background: #e0f2fe;
-  color: #0369a1;
-  border: 1px solid #7dd3fc;
-}
-.btn.illus-only {
-  background: #f3e8ff;
-  color: #6b21a8;
-  border: 1px solid #d8b4fe;
-}
-.btn.chart-only:disabled,
-.btn.illus-only:disabled {
-  opacity: 0.5;
-}
-.btn-spinner.dark {
-  border-color: rgba(3, 105, 161, 0.25);
-  border-top-color: #0369a1;
-}
-.btn-spinner.illus-spin {
-  border-color: rgba(107, 33, 168, 0.25);
-  border-top-color: #6b21a8;
-}
-
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-.form-item { display: flex; flex-direction: column; gap: 8px; }
-.form-item.full { grid-column: span 2; }
-.form-item label { font-size: 13px; font-weight: 700; color: #475569; padding-left: 4px; }
-.field-hint { margin: 0; font-size: 12px; line-height: 1.45; color: #64748b; font-weight: 500; padding-left: 4px; }
-
-.body-editor, .data-editor, .select-input { 
-  width: 100%; 
-  border: 1px solid #cbd5e1; 
-  border-radius: 10px; 
-  padding: 12px 16px; 
-  font-family: inherit; 
-  font-size: 14px; 
-  color: #1e293b;
-  background: #ffffff;
-  transition: all 0.2s;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-
-.body-editor:focus, .data-editor:focus, .select-input:focus { 
-  outline: none; 
-  border-color: #1f9d60; 
-  box-shadow: 0 0 0 4px rgba(31, 157, 96, 0.1);
-}
-
-.body-editor { height: 120px; resize: vertical; line-height: 1.6; }
-.data-editor { height: 100px; resize: vertical; background: #fcfdfc; }
-
-.select-input { 
-  appearance: none; 
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 16px;
-  padding-right: 40px;
-  cursor: pointer;
-  font-weight: 600;
-}
-.select-input:hover { border-color: #94a3b8; }
-
-.results-container { flex: 1; }
-.section-title { font-size: 18px; font-weight: 800; color: #0f172a; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
-.title-icon { background: #fffbeb; border-radius: 8px; padding: 4px; font-size: 20px; }
-.empty-state { 
-  background: white; 
-  padding: 80px 40px; 
-  border-radius: 16px; 
-  border: 2px dashed #e2e8f0; 
-  text-align: center; 
-  color: #64748b;
-}
-.empty-icon { font-size: 40px; margin-bottom: 16px; }
-.empty-state p { font-size: 16px; font-weight: 700; color: #1e293b; margin: 0 0 8px 0; }
-.empty-state span { font-size: 14px; color: #94a3b8; }
-
-.preview-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 24px; min-height: 500px; }
-.preview-card { background: white; border-radius: 16px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-.card-header { padding: 16px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-weight: 800; font-size: 14px; color: #1e293b; }
-.card-body { flex: 1; padding: 20px; position: relative; }
-
-.illus-info { display: flex; flex-direction: column; gap: 20px; }
-.info-group label { display: block; font-size: 12px; font-weight: 800; color: #64748b; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.05em; }
-.tag-cloud { display: flex; flex-wrap: wrap; gap: 8px; }
-.tag { background: #f1f5f9; color: #475569; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; border: 1px solid #e2e8f0; }
-.prompt-text { background: #f8fafc; padding: 12px; border-radius: 10px; font-size: 13px; line-height: 1.5; color: #334155; border: 1px solid #f1f5f9; }
-
-.image-placeholder { 
-  margin-top: 10px; 
-  height: 180px; 
-  background: #f8fafc; 
-  border-radius: 12px; 
-  display: flex; 
   flex-direction: column;
-  align-items: center; 
-  justify-content: center; 
-  color: #94a3b8; 
-  border: 2px dashed #e2e8f0;
-  gap: 8px;
+  height: 100%;
+  max-height: calc(100vh - 70px);
+  background: #fafafa;
+  color: #1a1a1a;
+}
+
+.upload-phase {
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 40px 24px;
+  background: #fafafa;
+}
+
+.upload-card {
+  background: #ffffff;
+  padding: 36px 40px;
+  border-radius: 8px;
+  border: 1px solid #e8e0e2;
+  width: min(640px, 100%);
+  text-align: center;
+  box-shadow: 0 4px 24px rgba(139, 41, 66, 0.06);
+}
+
+.upload-badge {
+  display: inline-block;
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffffff;
+  background: #8b2942;
+  padding: 6px 14px;
+  border-radius: 4px;
+}
+
+.upload-card h2 {
+  margin: 0 0 12px;
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.upload-lead {
+  margin: 0 0 28px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #5c5c5c;
+}
+
+.drop-zone {
+  border: 1px dashed #c4b8bc;
+  border-radius: 8px;
+  padding: 56px 24px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop-zone:hover {
+  background: #fffafb;
+  border-color: #8b2942;
+}
+
+.hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: #3d3d3d;
+}
+
+.icon {
+  font-size: 48px;
+}
+
+.loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: #6b6b6b;
+  font-size: 14px;
+}
+
+.spinner {
+  border: 3px solid #eee;
+  border-top: 3px solid #8b2942;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.hidden {
+  display: none;
+}
+
+.msg {
+  margin-top: 16px;
+  color: #8b2942;
+  font-size: 14px;
+}
+
+.work-full {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  direction: ltr;
+  align-items: stretch;
+  background: #fafafa;
+}
+
+/* 预览模式下宽度由 grid + 可拖拽分隔条控制 */
+.reader-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: none;
+  background: #f3f1f2;
+}
+
+.tools-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #ffffff;
+}
+
+.pane-splitter {
+  z-index: 2;
+  width: 6px;
+  margin: 0 -1px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  touch-action: none;
+  background: linear-gradient(90deg, #dcd4d7 0%, #ebe6e8 50%, #dcd4d7 100%);
+  box-shadow: inset 0 0 0 1px rgba(139, 41, 66, 0.12);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pane-splitter:hover,
+.pane-splitter.dragging {
+  background: #8b2942;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.pane-splitter.dragging {
+  cursor: col-resize;
+}
+
+.pane-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid #e8e0e2;
+  background: #ffffff;
+}
+
+.pane-tab {
+  padding: 12px 18px;
+  border: none;
+  background: transparent;
   font-size: 13px;
   font-weight: 600;
+  color: #8a8a8a;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s;
 }
-.placeholder-icon { font-size: 24px; }
 
-.btn { 
-  padding: 10px 24px; 
-  border-radius: 10px; 
-  border: none; 
-  cursor: pointer; 
-  font-weight: 700; 
-  font-size: 14px;
-  transition: all 0.2s;
-  display: inline-flex;
+.pane-tab:hover {
+  color: #5c5c5c;
+}
+
+.pane-tab.active {
+  color: #8b2942;
+  border-bottom-color: #8b2942;
+}
+
+.tools-tabs {
+  background: #fafafa;
+}
+
+.doc-view-tabs {
+  background: #ffffff;
+}
+
+.preview-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  padding: 10px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #e8e0e2;
+}
+
+.tb-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tb-doc {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a1a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.tb-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7a7a7a;
+}
+
+.tb-center {
+  display: flex;
   align-items: center;
   gap: 8px;
 }
-.primary { 
-  background: #1f9d60; 
-  color: white; 
-  box-shadow: 0 4px 12px rgba(31, 157, 96, 0.2);
+
+.tb-page {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3d3d3d;
+  min-width: 96px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
-.primary:hover:not(:disabled) { 
-  background: #167e4d; 
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(31, 157, 96, 0.3);
+
+.tb-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid #d9cdd1;
+  background: #ffffff;
+  color: #2d2d2d;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
 }
-.primary:disabled { background: #94a3b8; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.tb-icon:hover:not(:disabled) {
+  border-color: #8b2942;
+  color: #8b2942;
+}
+
+.tb-icon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tb-zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tb-zoom-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid #d9cdd1;
+  background: #ffffff;
+  font-size: 16px;
+  font-weight: 600;
+  color: #2d2d2d;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.tb-zoom-btn:hover:not(:disabled) {
+  border-color: #8b2942;
+  color: #8b2942;
+}
+
+.tb-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tb-zoom-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: #5c5c5c;
+  min-width: 44px;
+  text-align: center;
+}
+
+.tb-replace {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #d9cdd1;
+  background: #ffffff;
+  color: #3d3d3d;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tb-replace:hover {
+  border-color: #8b2942;
+  color: #8b2942;
+}
+
+.reader-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px 12px;
+  background: #f3f1f2;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.reader-viewport--solo {
+  flex: 1;
+  min-height: 0;
+}
+
+.paper-scale {
+  transform-origin: top center;
+  transition: transform 0.18s ease;
+  margin-bottom: 24px;
+}
+
+.paper {
+  width: min(720px, 100%);
+  background: #ffffff;
+  border: 1px solid #e0d8db;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  padding: clamp(24px, 3vw, 40px);
+  box-sizing: border-box;
+}
+
+.paper-kicker {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #8b2942;
+}
+
+.paper-kicker.muted {
+  color: #8a8a8a;
+}
+
+.paper-title {
+  margin: 0 0 20px;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  font-size: clamp(20px, 2.4vw, 26px);
+  font-weight: 700;
+  color: #1a1a1a;
+  line-height: 1.35;
+}
+
+.paper-body {
+  font-size: 14px;
+  line-height: 1.75;
+  color: #2d2d2d;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.paper-body--cols {
+  column-count: 2;
+  column-gap: 28px;
+}
+
+.paper-body--parsed {
+  column-count: 1;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+@media (max-width: 720px) {
+  .paper-body--cols {
+    column-count: 1;
+  }
+}
+
+.paper-body.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+.paper-body::selection {
+  background: #f5d4dc;
+  color: #1a1a1a;
+}
+
+.paper-extra {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px dashed #ddd5d8;
+}
+
+.paper-extra-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #8b2942;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.paper-extra-pre {
+  margin: 0;
+  font-size: 12px;
+  color: #4a4a4a;
+  white-space: pre-wrap;
+}
+
+.page-chips {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid #e8e0e2;
+  border-bottom: 1px solid #e8e0e2;
+  background: #fafafa;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.page-chip {
+  min-width: 36px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid #d9cdd1;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5c5c5c;
+  cursor: pointer;
+}
+
+.page-chip:hover {
+  border-color: #8b2942;
+  color: #8b2942;
+}
+
+.page-chip.active {
+  background: #8b2942;
+  border-color: #8b2942;
+  color: #ffffff;
+}
+
+.tools-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 24px;
+}
+
+.tools-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sec-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b6b6b;
+}
+
+.sec-hint {
+  margin: -8px 0 8px;
+  font-size: 12px;
+  color: #9a9a9a;
+}
+
+.selection-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.selection-preview {
+  min-height: 56px;
+  max-height: 100px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #e0d8db;
+  background: #fafafa;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #2d2d2d;
+}
+
+.btn-use {
+  align-self: flex-start;
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid #8b2942;
+  background: #ffffff;
+  color: #8b2942;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btn-use:hover:not(:disabled) {
+  background: #8b2942;
+  color: #ffffff;
+}
+
+.btn-use:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.jump-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.jump {
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid #8b2942;
+  background: #ffffff;
+  color: #8b2942;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.jump:hover {
+  background: #8b2942;
+  color: #ffffff;
+}
+
+.gen-section .pipeline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn.ghost {
+  border: 1px solid #c4b8bc;
+  background: #ffffff;
+  color: #4a4a4a;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  border-color: #8b2942;
+  color: #8b2942;
+}
+
+.btn.solid {
+  border: 1px solid #8b2942;
+  background: #8b2942;
+  color: #ffffff;
+}
+
+.btn.solid:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pipeline-result {
+  margin-top: 12px;
+}
+
+.pipeline-empty {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #8a8a8a;
+}
 
 .btn-spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255,255,255,0.3);
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
   border-top-color: white;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn-spinner.wine-spin {
+  border-color: rgba(139, 41, 66, 0.25);
+  border-top-color: #8b2942;
+}
+
+.function-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fafafa;
+}
+
+.fn-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e8e0e2;
+}
+
+.fn-back {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #d9cdd1;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3d3d3d;
+  cursor: pointer;
+}
+
+.fn-back:hover {
+  border-color: #8b2942;
+  color: #8b2942;
+}
+
+.fn-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.fn-meta {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: #7a7a7a;
+}
+
+.fn-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 32px;
+}
+
+@media (max-width: 768px) {
+  .work-full {
+    flex-direction: column;
+  }
+
+  .reader-column {
+    flex: 1 1 auto;
+    border-right: none;
+    border-bottom: 1px solid #e8e0e2;
+    min-height: 48vh;
+    max-height: 56vh;
+  }
+
+  .tools-column {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+    max-height: none;
+  }
+
+  .preview-toolbar {
+    justify-content: flex-start;
+  }
+
+  .page-chips {
+    max-height: 88px;
+  }
+}
 </style>
