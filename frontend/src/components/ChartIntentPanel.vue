@@ -2,16 +2,10 @@
 import { ref } from "vue";
 import { store } from "../store";
 import { vizLabIntent } from "../api/client";
-import SlideInputForm from "../components/SlideInputForm.vue";
+import SlideInputForm from "./SlideInputForm.vue";
 import type { SlideRequest } from "../types";
 
-const slide = ref<SlideRequest>({
-  topic: "",
-  body: "",
-  data_description: "",
-  slide_type: "content",
-  mode: "auto",
-});
+const slide = defineModel<SlideRequest>("slide", { required: true });
 
 const loading = ref(false);
 const err = ref("");
@@ -33,15 +27,7 @@ async function run() {
 </script>
 
 <template>
-  <div class="page">
-    <header class="hero">
-      <h1>图表意图与图型选择</h1>
-      <p class="lead">
-        从自然语言或结构化数据中识别<strong>比较 / 占比 / 趋势 / 关系 / 表格</strong>等意图，并映射到推荐图型（柱状、饼图、折线、桑基、表格等）。本页<strong>不生成文生图</strong>、不输出完整
-        ECharts 配置，只做语义解析，便于单独统计识别准确率。
-      </p>
-    </header>
-
+  <div class="panel-root">
     <div class="panel">
       <h2>输入一页内容</h2>
       <SlideInputForm v-model="slide" />
@@ -68,50 +54,22 @@ async function run() {
     </div>
 
     <p class="hint">
-      需要生成可执行图表代码？请前往顶部导航<strong>「图表代码生成」</strong>。需要文生图 Prompt？请前往<strong>「文生图配图」</strong>。
+      需要生成可执行图表代码？返回预览后进入<strong>「图表代码」</strong>。需要文生图 Prompt？进入<strong>「文生图配图」</strong>。
     </p>
   </div>
 </template>
 
 <style scoped>
-.page {
-  max-width: 920px;
-  margin: 0 auto;
-  padding: 28px 24px 48px;
-}
-.hero {
-  margin-bottom: 28px;
-}
-.tag {
-  display: inline-block;
-  margin: 0 0 10px;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #0369a1;
-  background: #e0f2fe;
-  padding: 4px 10px;
-  border-radius: 6px;
-}
-.hero h1 {
-  margin: 0 0 12px;
-  font-size: 28px;
-  font-weight: 800;
-  color: #0f172a;
-}
-.lead {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1.65;
-  color: #475569;
+.panel-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .panel {
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 16px;
   padding: 22px 24px;
-  margin-bottom: 20px;
   box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
 }
 .panel h2 {
@@ -176,7 +134,7 @@ details summary {
   border-radius: 10px;
   font-size: 12px;
   overflow: auto;
-  max-height: 400px;
+  max-height: 320px;
 }
 .hint {
   font-size: 13px;

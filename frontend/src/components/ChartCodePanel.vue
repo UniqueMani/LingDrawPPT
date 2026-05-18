@@ -5,19 +5,13 @@ import mermaid from "mermaid";
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { store } from "../store";
 import { vizLabChartCode } from "../api/client";
-import SlideInputForm from "../components/SlideInputForm.vue";
+import SlideInputForm from "./SlideInputForm.vue";
 import type { SlideRequest, VizLabChartCodeResponse } from "../types";
 
 Chart.register(...registerables);
 mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme: "neutral" });
 
-const slide = ref<SlideRequest>({
-  topic: "",
-  body: "",
-  data_description: "",
-  slide_type: "content",
-  mode: "auto",
-});
+const slide = defineModel<SlideRequest>("slide", { required: true });
 
 const tgtEcharts = ref(true);
 const tgtChartjs = ref(true);
@@ -160,15 +154,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page">
-    <header class="hero">
-      <h1>图表代码自动生成</h1>
-      <p class="lead">
-        利用 LLM（若已配置 API Key）或规则降级，直接产出<strong>ECharts option</strong>、<strong>Chart.js 配置</strong>与
-        <strong>Mermaid 源码</strong>；后端附带<strong>自动校验</strong>（series、坐标轴、结构等）。本页<strong>不做文生图</strong>。
-      </p>
-    </header>
-
+  <div class="panel-root">
     <div class="panel">
       <h2>输入与 Prompt 约束</h2>
       <SlideInputForm v-model="slide" />
@@ -188,7 +174,7 @@ onBeforeUnmount(() => {
       <p v-if="err" class="err">{{ err }}</p>
     </div>
 
-    <div v-if="result" class="panel">
+    <div v-if="result" class="panel meta">
       <span class="src">来源：{{ result.source }}</span>
       <div v-if="result.validationIssues?.length" class="issues">
         <h3>自动校验</h3>
@@ -222,46 +208,24 @@ onBeforeUnmount(() => {
         <details><summary>源码</summary><pre class="pre">{{ result.mermaidSource }}</pre></details>
       </div>
     </div>
+
+    <p class="hint">
+      只做语义分析请使用<strong>「图表意图」</strong>；文生图请使用<strong>「文生图配图」</strong>。
+    </p>
   </div>
 </template>
 
 <style scoped>
-.page {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 28px 24px 48px;
-}
-.hero {
-  margin-bottom: 24px;
-}
-.tag {
-  display: inline-block;
-  margin: 0 0 10px;
-  font-size: 11px;
-  font-weight: 800;
-  color: #1d4ed8;
-  background: #dbeafe;
-  padding: 4px 10px;
-  border-radius: 6px;
-}
-.hero h1 {
-  margin: 0 0 12px;
-  font-size: 28px;
-  font-weight: 800;
-  color: #0f172a;
-}
-.lead {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1.65;
-  color: #475569;
+.panel-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .panel {
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 16px;
   padding: 22px 24px;
-  margin-bottom: 18px;
 }
 .panel h2,
 .panel h3 {
@@ -393,6 +357,12 @@ details summary {
 }
 .pre.sm {
   max-height: 140px;
+}
+.hint {
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+  margin: 0;
 }
 @media (max-width: 880px) {
   .previews {

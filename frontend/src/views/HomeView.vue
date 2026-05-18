@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref } from 'vue';
 import { store } from '../store';
-import { login, register, me, setAuthToken } from '../api/client';
+import { login, register, setAuthToken } from '../api/client';
 import ChartPreview from '../components/ChartPreview.vue';
 
 const authTab = ref<'login' | 'register'>('login');
@@ -96,8 +96,7 @@ const usageTrendOption = {
       </div>
 
       <div class="action-row">
-        <router-link to="/upload" class="btn primary">前往上传文件</router-link>
-        <router-link v-if="store.slides.length > 0" to="/workspace" class="btn secondary">进入工作台</router-link>
+        <router-link to="/workspace" class="btn primary">进入工作台（上传与配图）</router-link>
       </div>
     </section>
   </div>
