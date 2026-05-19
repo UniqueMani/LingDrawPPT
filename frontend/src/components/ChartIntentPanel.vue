@@ -1,15 +1,23 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { store } from "../store";
 import { vizLabIntent } from "../api/client";
 import SlideInputForm from "./SlideInputForm.vue";
 import type { SlideRequest } from "../types";
 
 const slide = defineModel<SlideRequest>("slide", { required: true });
+const props = defineProps<{
+  initialSemantic?: Record<string, any> | null;
+  initialReason?: string | null;
+  initialChartType?: string | null;
+}>();
 
 const loading = ref(false);
 const err = ref("");
 const semantic = ref<Record<string, any> | null>(null);
+const displaySemantic = computed(() => semantic.value || props.initialSemantic || null);
+const displayReason = computed(() => displaySemantic.value?.reason || props.initialReason || "");
+const displayChartType = computed(() => displaySemantic.value?.chartType || props.initialChartType || "");
 
 async function run() {
   loading.value = true;
@@ -37,25 +45,22 @@ async function run() {
       <p v-if="err" class="err">{{ err }}</p>
     </div>
 
-    <div v-if="semantic" class="panel result">
+    <div v-if="displaySemantic" class="panel result">
       <h2>解析结果</h2>
       <div class="pills">
-        <span v-if="semantic.intent" class="pill">intent: {{ semantic.intent }}</span>
-        <span v-if="semantic.chartType" class="pill">chartType: {{ semantic.chartType }}</span>
-        <span v-if="semantic.confidence != null" class="pill"
-          >confidence: {{ (Number(semantic.confidence) * 100).toFixed(0) }}%</span
+        <span v-if="displaySemantic.intent" class="pill">intent: {{ displaySemantic.intent }}</span>
+        <span v-if="displayChartType" class="pill">chartType: {{ displayChartType }}</span>
+        <span v-if="displaySemantic.confidence != null" class="pill"
+          >confidence: {{ (Number(displaySemantic.confidence) * 100).toFixed(0) }}%</span
         >
       </div>
-      <p v-if="semantic.reason" class="reason">{{ semantic.reason }}</p>
+      <p v-if="displayReason" class="reason">{{ displayReason }}</p>
       <details open>
         <summary>semantic JSON（含 scores 可导出做实验）</summary>
-        <pre class="pre">{{ JSON.stringify(semantic, null, 2) }}</pre>
+        <pre class="pre">{{ JSON.stringify(displaySemantic, null, 2) }}</pre>
       </details>
     </div>
 
-    <p class="hint">
-      需要生成可执行图表代码？返回预览后进入<strong>「图表代码」</strong>。需要文生图 Prompt？进入<strong>「文生图配图」</strong>。
-    </p>
   </div>
 </template>
 
@@ -63,42 +68,59 @@ async function run() {
 .panel-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .panel {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  padding: 22px 24px;
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0 0 var(--space-6);
+  box-shadow: none;
+  border-bottom: 1px solid var(--color-border);
+  animation: panel-in var(--motion-slow) var(--motion-ease) both;
+  transition: transform var(--motion-base) var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease);
+}
+.panel:hover {
+  box-shadow: none;
 }
 .panel h2 {
-  margin: 0 0 18px;
+  margin: 0 0 var(--space-5);
   font-size: 16px;
   font-weight: 800;
-  color: #1e293b;
+  color: var(--color-text);
 }
 .btn {
-  margin-top: 18px;
-  padding: 12px 24px;
+  min-height: var(--control-lg);
+  margin-top: var(--space-5);
+  padding: 0 24px;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-weight: 800;
   cursor: pointer;
   font-size: 14px;
+  transition: background var(--motion-base), transform var(--motion-base), box-shadow var(--motion-base);
 }
 .btn.primary {
-  background: #0ea5e9;
+  background: var(--color-primary);
   color: #fff;
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
 }
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .err {
-  margin-top: 12px;
-  color: #b91c1c;
+  margin-top: var(--space-3);
+  color: var(--color-danger);
   font-size: 14px;
+  background: var(--color-danger-soft);
+  border: 1px solid #fee2e2;
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
 }
 .pills {
   display: flex;
@@ -107,16 +129,25 @@ async function run() {
   margin-bottom: 12px;
 }
 .pill {
-  background: #eff6ff;
-  color: #1d4ed8;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-border);
   padding: 6px 11px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   font-size: 12px;
   font-weight: 700;
 }
 .reason {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
   font-size: 14px;
-  color: #334155;
+  color: var(--color-text-soft);
   line-height: 1.55;
   margin: 0 0 12px;
 }
@@ -124,21 +155,21 @@ details summary {
   cursor: pointer;
   font-weight: 700;
   font-size: 13px;
-  color: #475569;
+  color: var(--color-muted);
   margin-bottom: 8px;
 }
 .pre {
-  background: #0f172a;
-  color: #e2e8f0;
+  background: #1f1720;
+  color: #f8eef1;
   padding: 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 12px;
   overflow: auto;
   max-height: 320px;
 }
 .hint {
   font-size: 13px;
-  color: #64748b;
+  color: var(--color-muted);
   line-height: 1.5;
   margin: 0;
 }

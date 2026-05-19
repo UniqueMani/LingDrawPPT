@@ -1,9 +1,11 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from backend.config import APP_HOST, APP_PORT
+from backend.config import APP_HOST, APP_PORT, PREVIEW_DIR
 from backend.config import ADMIN_PASSWORD, ADMIN_USERNAME, TEST_PASSWORD, TEST_USERNAME
 from backend.db import init_db
 from backend.routers.admin import router as admin_router
@@ -38,6 +40,10 @@ app.include_router(upload_router, prefix="/api", tags=["upload"])
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(admin_router, prefix="/api", tags=["admin"])
 app.include_router(viz_lab_router, prefix="/api", tags=["viz-lab"])
+
+preview_path = Path(PREVIEW_DIR)
+preview_path.mkdir(parents=True, exist_ok=True)
+app.mount("/previews", StaticFiles(directory=str(preview_path)), name="previews")
 
 
 @app.on_event("startup")

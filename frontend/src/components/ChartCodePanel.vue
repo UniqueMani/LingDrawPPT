@@ -2,7 +2,7 @@
 import { Chart, registerables } from "chart.js";
 import * as echarts from "echarts";
 import mermaid from "mermaid";
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { store } from "../store";
 import { vizLabChartCode } from "../api/client";
 import SlideInputForm from "./SlideInputForm.vue";
@@ -12,6 +12,12 @@ Chart.register(...registerables);
 mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme: "neutral" });
 
 const slide = defineModel<SlideRequest>("slide", { required: true });
+const props = defineProps<{
+  initialEchartsOption?: Record<string, any> | null;
+  initialIntent?: string | null;
+  initialChartType?: string | null;
+  initialReason?: string | null;
+}>();
 
 const tgtEcharts = ref(true);
 const tgtChartjs = ref(true);
@@ -23,12 +29,17 @@ const instructions = ref(
 const loading = ref(false);
 const err = ref("");
 const result = ref<VizLabChartCodeResponse | null>(null);
+const displayEchartsOption = computed(() =>
+  result.value ? result.value.echartsOption || null : props.initialEchartsOption || null
+);
+const hasDisplayResult = computed(() => Boolean(result.value || displayEchartsOption.value));
 
 const chartJsCanvas = ref<HTMLCanvasElement | null>(null);
 const mermaidHost = ref<HTMLDivElement | null>(null);
 const echartsEl = ref<HTMLDivElement | null>(null);
 let chartJsInstance: Chart | null = null;
 let echartsInstance: echarts.ECharts | null = null;
+let echartsResizeObserver: ResizeObserver | null = null;
 
 function destroyChartJs() {
   if (chartJsInstance) {
@@ -38,6 +49,8 @@ function destroyChartJs() {
 }
 
 function destroyEcharts() {
+  echartsResizeObserver?.disconnect();
+  echartsResizeObserver = null;
   if (echartsInstance) {
     echartsInstance.dispose();
     echartsInstance = null;
@@ -79,6 +92,13 @@ function renderEcharts(opt: Record<string, any> | null | undefined) {
   if (!dom || !opt || typeof opt !== "object" || !Object.keys(opt).length) return;
   try {
     echartsInstance = echarts.init(dom, undefined, { renderer: "svg" });
+    echartsResizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        echartsInstance?.resize();
+      });
+    });
+    echartsResizeObserver.observe(dom);
+    echartsInstance.resize();
     echartsInstance.setOption(opt, true);
   } catch (e) {
     console.warn(e);
@@ -140,11 +160,12 @@ watch(
   }
 );
 watch(
-  () => result.value?.echartsOption,
+  () => displayEchartsOption.value,
   async (opt) => {
     await nextTick();
     if (opt) renderEcharts(opt);
-  }
+  },
+  { immediate: true }
 );
 
 onBeforeUnmount(() => {
@@ -174,9 +195,14 @@ onBeforeUnmount(() => {
       <p v-if="err" class="err">{{ err }}</p>
     </div>
 
-    <div v-if="result" class="panel meta">
-      <span class="src">来源：{{ result.source }}</span>
-      <div v-if="result.validationIssues?.length" class="issues">
+    <div v-if="hasDisplayResult" class="panel meta">
+      <div class="pills">
+        <span v-if="props.initialIntent" class="pill">intent: {{ props.initialIntent }}</span>
+        <span v-if="props.initialChartType" class="pill">chart: {{ props.initialChartType }}</span>
+      </div>
+      <p v-if="props.initialReason" class="reason">{{ props.initialReason }}</p>
+      <span v-if="result" class="src">来源：{{ result.source }}</span>
+      <div v-if="result?.validationIssues?.length" class="issues">
         <h3>自动校验</h3>
         <ul>
           <li v-for="(it, i) in result.validationIssues" :key="i" :class="it.severity">
@@ -184,34 +210,30 @@ onBeforeUnmount(() => {
           </li>
         </ul>
       </div>
-      <p v-else class="ok">未报告 error 级问题（仍需人工核对语义）。</p>
-      <details v-if="result.rawLlmExcerpt">
+      <p v-else-if="result" class="ok">未报告 error 级问题（仍需人工核对语义）。</p>
+      <details v-if="result?.rawLlmExcerpt">
         <summary>LLM 原文摘录</summary>
         <pre class="pre sm">{{ result.rawLlmExcerpt }}</pre>
       </details>
     </div>
 
-    <div v-if="result" class="previews">
-      <div v-if="result.echartsOption && tgtEcharts" class="pv">
+    <div v-if="hasDisplayResult" class="previews">
+      <div v-if="displayEchartsOption && tgtEcharts" class="pv">
         <h3>ECharts 预览</h3>
         <div ref="echartsEl" class="ech" />
-        <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(result.echartsOption, null, 2) }}</pre></details>
+        <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(displayEchartsOption, null, 2) }}</pre></details>
       </div>
-      <div v-if="result.chartJsConfig && tgtChartjs" class="pv">
+      <div v-if="result?.chartJsConfig && tgtChartjs" class="pv">
         <h3>Chart.js 预览</h3>
         <div class="cj"><canvas ref="chartJsCanvas" width="420" height="260" /></div>
         <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(result.chartJsConfig, null, 2) }}</pre></details>
       </div>
-      <div v-if="result.mermaidSource && tgtMermaid" class="pv wide">
+      <div v-if="result?.mermaidSource && tgtMermaid" class="pv wide">
         <h3>Mermaid 预览</h3>
         <div ref="mermaidHost" class="mmd" />
         <details><summary>源码</summary><pre class="pre">{{ result.mermaidSource }}</pre></details>
       </div>
     </div>
-
-    <p class="hint">
-      只做语义分析请使用<strong>「图表意图」</strong>；文生图请使用<strong>「文生图配图」</strong>。
-    </p>
   </div>
 </template>
 
@@ -219,32 +241,51 @@ onBeforeUnmount(() => {
 .panel-root {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .panel {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  padding: 22px 24px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0 0 var(--space-6);
+  box-shadow: none;
+  border-bottom: 1px solid var(--color-border);
+  animation: panel-in var(--motion-slow) var(--motion-ease) both;
+  transition: transform var(--motion-base) var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease);
+}
+.panel:hover {
+  box-shadow: none;
 }
 .panel h2,
 .panel h3 {
   margin: 0 0 14px;
   font-size: 16px;
   font-weight: 800;
-  color: #1e293b;
+  color: var(--color-text);
 }
 .targets {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 14px 20px;
-  margin: 16px 0;
+  gap: var(--space-3) var(--space-5);
+  margin: var(--space-4) 0;
   font-size: 14px;
+}
+.targets label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-sm);
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg);
+  color: var(--color-text-soft);
+  font-weight: 700;
 }
 .tl {
   font-weight: 800;
-  color: #475569;
+  color: var(--color-muted);
   margin-right: 4px;
 }
 .f {
@@ -253,34 +294,80 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 .ta {
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  min-height: var(--control-lg);
   padding: 10px 12px;
   font-size: 13px;
   font-family: inherit;
 }
+.ta:focus {
+  border-color: var(--color-primary);
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
 .btn {
-  margin-top: 14px;
-  padding: 12px 24px;
+  min-height: var(--control-lg);
+  margin-top: var(--space-4);
+  padding: 0 24px;
   border: none;
-  border-radius: 10px;
-  background: #2563eb;
+  border-radius: var(--radius-control);
+  background: var(--color-primary);
   color: #fff;
   font-weight: 800;
   cursor: pointer;
+  transition: background var(--motion-base), transform var(--motion-base), box-shadow var(--motion-base);
+}
+.btn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
 }
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .err {
-  color: #b91c1c;
-  margin-top: 10px;
+  color: var(--color-danger);
+  margin-top: var(--space-3);
+  background: var(--color-danger-soft);
+  border: 1px solid #fee2e2;
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+}
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-border);
+  padding: 6px 11px;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+  font-weight: 700;
+}
+.reason {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+  font-size: 14px;
+  color: var(--color-text-soft);
+  line-height: 1.55;
+  margin: 0 0 12px;
 }
 .src {
   font-size: 12px;
   font-weight: 700;
-  color: #4338ca;
+  color: var(--color-primary);
 }
 .issues ul {
   margin: 8px 0 0;
@@ -288,25 +375,28 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 .issues li.error {
-  color: #b91c1c;
+  color: var(--color-danger);
 }
 .issues li.warn {
-  color: #a16207;
+  color: var(--color-warning);
 }
 .ok {
   font-size: 13px;
-  color: #15803d;
+  color: var(--color-primary);
 }
 .previews {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 18px;
+  gap: var(--space-4);
 }
 .pv {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  padding: 18px;
+  min-width: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-card);
+  animation: panel-in var(--motion-slow) var(--motion-ease) both;
 }
 .pv.wide {
   grid-column: 1 / -1;
@@ -318,13 +408,14 @@ onBeforeUnmount(() => {
 }
 .ech {
   width: 100%;
-  height: 300px;
+  min-width: 0;
+  height: clamp(260px, 38vh, 420px);
 }
 .mmd {
   min-height: 180px;
   padding: 12px;
-  background: #fafafa;
-  border-radius: 10px;
+  background: var(--color-bg);
+  border-radius: var(--radius-control);
   overflow: auto;
 }
 .mmd :deep(svg) {
@@ -332,7 +423,7 @@ onBeforeUnmount(() => {
   height: auto;
 }
 .mmd-err {
-  color: #b91c1c;
+  color: var(--color-danger);
   white-space: pre-wrap;
   font-size: 12px;
 }
@@ -344,13 +435,13 @@ details summary {
   font-weight: 700;
   font-size: 12px;
   margin: 10px 0 6px;
-  color: #475569;
+  color: var(--color-muted);
 }
 .pre {
-  background: #0f172a;
-  color: #e2e8f0;
+  background: #1f1720;
+  color: #f8eef1;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 11px;
   overflow: auto;
   max-height: 260px;
@@ -360,7 +451,7 @@ details summary {
 }
 .hint {
   font-size: 13px;
-  color: #64748b;
+  color: var(--color-muted);
   line-height: 1.5;
   margin: 0;
 }
