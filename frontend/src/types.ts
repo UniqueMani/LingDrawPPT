@@ -77,3 +77,30 @@ export interface SlideState {
   history: SlideSnapshot[];
 }
 
+export interface VizLabIntentResponse {
+  semantic: Record<string, any>;
+}
+
+export interface ChartCodeValidationIssue {
+  target: string;
+  severity: string;
+  message: string;
+}
+
+export interface VizLabChartCodeResponse {
+  echartsOption?: Record<string, any> | null;
+  chartJsConfig?: Record<string, any> | null;
+  mermaidSource?: string | null;
+  validationIssues: ChartCodeValidationIssue[];
+  source: string;
+  rawLlmExcerpt?: string | null;
+}
+
+export interface VizLabIllustrationResponse {
+  needIllus: boolean;
+  keywords: string[];
+  prompt: string;
+  reason: string;
+  experiment: Record<string, any>;
+}
+

@@ -19,10 +19,11 @@ def _dedup_keep_order(items: List[str]) -> List[str]:
 def _intent_keywords(intent: str) -> List[str]:
     return {
         "trend": ["增长曲线", "折线图", "发展趋势", "未来规划"],
-        "comparison": ["对比图", "评估", "排行榜", "差异"],
+        "comparison": ["对比图", "评估", "排行榜", "差异", "分组对比"],
         "proportion": ["市场份额", "占比", "饼图结构", "比例关系"],
         "process": ["流程", "阶段", "步骤", "推进"],
         "hierarchy": ["层级结构", "组织架构", "树状图", "关联"],
+        "relation": ["流向", "转化", "桑基", "路径", "迁移"],
     }.get(intent, ["信息可视化", "抽象图形"])
 
 
@@ -39,7 +40,7 @@ def generate_illustration_strategy(req: SlideRequest, intent: str) -> Dict[str, 
     need = slide_type in {"cover", "section-divider"}
 
     # 内容页：如果语义是趋势/流程/层级，图像也有帮助
-    if slide_type == "content" and intent in {"trend", "process", "hierarchy"}:
+    if slide_type == "content" and intent in {"trend", "process", "hierarchy", "relation"}:
         need = True
 
     intent_kw = _intent_keywords(intent)

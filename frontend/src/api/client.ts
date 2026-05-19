@@ -5,6 +5,9 @@ import type {
   IllustrationStrategyResponse,
   SlideRequest,
   UserDTO,
+  VizLabChartCodeResponse,
+  VizLabIllustrationResponse,
+  VizLabIntentResponse,
 } from "../types";
 
 let authToken = "";
@@ -47,6 +50,36 @@ export async function illustration(baseUrl: string, req: SlideRequest) {
     `${b}/api/illustration`,
     req
   );
+}
+
+export async function vizLabIntent(baseUrl: string, req: SlideRequest) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<VizLabIntentResponse>(`${b}/api/viz-lab/intent`, req);
+}
+
+export async function vizLabChartCode(
+  baseUrl: string,
+  payload: { slide: SlideRequest; targets: string[]; instructions?: string | null }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<VizLabChartCodeResponse>(`${b}/api/viz-lab/chart-code`, payload);
+}
+
+export async function vizLabIllustration(
+  baseUrl: string,
+  payload: {
+    slide: SlideRequest;
+    image_model: string;
+    style_ref_url?: string | null;
+    lora_hint?: string | null;
+    extra_style_words?: string | null;
+  }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<VizLabIllustrationResponse>(`${b}/api/viz-lab/illustration`, payload);
 }
 
 export async function extractText(baseUrl: string, file: File) {

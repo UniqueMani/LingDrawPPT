@@ -85,3 +85,46 @@ class UserDTO(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     user: UserDTO
+
+
+class ChartCodeValidationIssue(BaseModel):
+    target: str
+    severity: str
+    message: str
+
+
+class VizLabChartCodeRequest(BaseModel):
+    slide: SlideRequest
+    targets: List[str] = Field(
+        default_factory=lambda: ["echarts", "chartjs", "mermaid"],
+    )
+    instructions: Optional[str] = None
+
+
+class VizLabChartCodeResponse(BaseModel):
+    echartsOption: Optional[Dict[str, Any]] = None
+    chartJsConfig: Optional[Dict[str, Any]] = None
+    mermaidSource: Optional[str] = None
+    validationIssues: List[ChartCodeValidationIssue] = Field(default_factory=list)
+    source: str = "fallback"
+    rawLlmExcerpt: Optional[str] = None
+
+
+class VizLabIntentResponse(BaseModel):
+    semantic: Dict[str, Any] = Field(default_factory=dict)
+
+
+class VizLabIllustrationRequest(BaseModel):
+    slide: SlideRequest
+    image_model: str = "flux"
+    style_ref_url: Optional[str] = None
+    lora_hint: Optional[str] = None
+    extra_style_words: Optional[str] = None
+
+
+class VizLabIllustrationResponse(BaseModel):
+    needIllus: bool
+    keywords: List[str] = Field(default_factory=list)
+    prompt: str = ""
+    reason: str = ""
+    experiment: Dict[str, Any] = Field(default_factory=dict)
