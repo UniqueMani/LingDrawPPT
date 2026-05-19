@@ -5,3 +5,6 @@ python-dotenv
 pypdf
 python-pptx
 python-multipart
+Pillow
+PyMuPDF
+pywin32; platform_system == "Windows"

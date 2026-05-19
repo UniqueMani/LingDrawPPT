@@ -40,7 +40,7 @@ export interface ExtractTextResponse {
   text: string;
   title: string;
   pages: number;
-  pages_detail: Array<{ page: number; title: string; text: string }>;
+  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string }>;
 }
 
 export interface UserDTO {
@@ -67,6 +67,9 @@ export interface SlideSnapshot {
 
 export interface SlideState {
   id: string;
+  page: number;
+  previewUrl?: string;
+  thumbnailUrl?: string;
   input: SlideRequest;
   analyze?: AnalyzeResponse;
   illustration?: IllustrationStrategyResponse;
