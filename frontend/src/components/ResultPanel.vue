@@ -12,6 +12,17 @@ const props = defineProps<{
 }>();
 
 const illus = computed(() => props.slide.illustration?.illustration);
+
+const tablePreview = computed(() => {
+  const chart = props.slide.analyze?.chart;
+  if (!chart || chart.chartType !== "data_table") return null;
+  const ex = chart.extracted || {};
+  const columns = ex.columns;
+  const rows = ex.rows;
+  if (!Array.isArray(columns) || !Array.isArray(rows)) return null;
+  return { columns: columns as string[], rows: rows as unknown[][] };
+});
+
 const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1280);
 const handleResize = () => {
   viewportWidth.value = window.innerWidth;
@@ -78,6 +89,9 @@ onBeforeUnmount(() => {
             <span class="pill">chart: {{ slide.analyze?.chart?.chartType }}</span>
           </div>
           <div class="reason">{{ slide.analyze?.chart?.reason }}</div>
+          <div v-if="slide.analyze?.semantic && slide.analyze.semantic.confidence != null" class="conf">
+            规则置信度（无 LLM 时）：{{ (slide.analyze.semantic.confidence * 100).toFixed(0) }}%
+          </div>
           <details class="details">
             <summary>查看 extracted</summary>
             <pre class="pre">{{ JSON.stringify(slide.analyze?.chart?.extracted || {}, null, 2) }}</pre>
@@ -90,7 +104,22 @@ onBeforeUnmount(() => {
         <div class="cardTitle">图表预览</div>
         <div v-if="slide.statusAnalyze === 'loading'" class="muted">加载中…</div>
         <div v-else class="chartWrap">
+          <div v-if="tablePreview" class="tableWrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th v-for="(c, i) in tablePreview.columns" :key="i">{{ c }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, ri) in tablePreview.rows" :key="ri">
+                  <td v-for="(cell, ci) in row" :key="ci">{{ cell ?? "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <ChartPreview
+            v-else
             :option="slide.analyze?.chart?.echartsOption"
             :width="chartWidth"
             :height="420"
@@ -173,84 +202,43 @@ onBeforeUnmount(() => {
 .illusCard {
   flex: 1 1 100%;
 }
-.cardTitle {
-  font-weight: 700;
-  margin-bottom: 10px;
-  color: #111827;
-}
-.muted {
-  color: #6b7280;
-  font-size: 13px;
-}
-.error {
-  color: #b91c1c;
-  font-size: 13px;
-  white-space: pre-wrap;
-}
-.pills {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-.pill {
-  display: inline-block;
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: #eaf9f0;
-  color: #0f5132;
-}
-.pill.muted {
-  background: #f9fafb;
-  color: #6b7280;
-}
-.reason {
-  font-size: 13px;
-  color: #111827;
-  white-space: pre-wrap;
-}
-.details {
-  margin-top: 10px;
-}
-.pre {
-  white-space: pre-wrap;
-  margin: 0;
-  font-size: 12px;
-  color: #111827;
-}
-.btnRow {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-.chartWrap {
-  width: 100%;
-  overflow-x: auto;
-}
-.btn {
-  border: 1px solid #1f9d60;
-  background: #1f9d60;
-  color: #fff;
-  border-radius: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 16px rgba(79, 70, 229, 0.25);
-}
-.btn.secondary {
-  background: #fff;
-  color: #0f5132;
-  border-color: #96d5b2;
-}
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+.cardTitle { font-weight: 800; margin-bottom: 16px; color: #0f172a; display: flex; align-items: center; gap: 8px; font-size: 15px; }
+
+.loading-state { padding: 20px 0; }
+.skeleton-text { height: 12px; background: #f1f5f9; border-radius: 4px; margin-bottom: 10px; animation: pulse 1.5s infinite; }
+.skeleton-text.short { width: 60%; }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+.intent-badges { display: flex; gap: 12px; margin-bottom: 16px; }
+.intent-badge { background: #f0fdf4; border: 1px solid #dcfce7; padding: 8px 12px; border-radius: 8px; display: flex; flex-direction: column; }
+.intent-badge.chart { background: #eff6ff; border-color: #dbeafe; }
+.intent-badge .label { font-size: 10px; text-transform: uppercase; color: #64748b; font-weight: 700; }
+.intent-badge .val { font-size: 14px; font-weight: 800; color: #1f9d60; }
+.intent-badge.chart .val { color: #2563eb; }
+
+.reason-box { background: #f8fafc; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.5; color: #334155; border-left: 4px solid #1f9d60; margin-bottom: 16px; }
+.conf { font-size: 12px; color: #64748b; margin: 8px 0 0; }
+.tableWrap { overflow-x: auto; max-width: 100%; }
+.chartWrap .data-table { margin-top: 0; }
+
+.extracted-section { margin-top: 16px; }
+.section-subtitle { font-size: 12px; font-weight: 700; color: #64748b; margin-bottom: 8px; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.data-table th { text-align: left; background: #f8fafc; padding: 8px; border-bottom: 1px solid #e2e8f0; color: #64748b; }
+.data-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; color: #0f172a; }
+.data-table td.empty { text-align: center; color: #94a3b8; padding: 20px; }
+
+.action-footer { display: flex; gap: 10px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #f1f5f9; }
+.btn-sm { padding: 6px 12px; border-radius: 6px; border: none; font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+.btn-sm.primary { background: #1f9d60; color: white; }
+.btn-sm.secondary { background: #f1f5f9; color: #475569; }
+.btn-sm:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+
+.loading-chart { height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #64748b; font-size: 13px; }
+.spinner { width: 30px; height: 30px; border: 3px solid #f1f5f9; border-top-color: #1f9d60; border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error-box { background: #fef2f2; border: 1px solid #fee2e2; color: #b91c1c; padding: 12px; border-radius: 8px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
 .formRow {
   margin-top: 10px;
 }
