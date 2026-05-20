@@ -877,7 +877,7 @@ onBeforeUnmount(() => {
   padding: clamp(28px, 5vw, 48px);
   border-radius: var(--radius-card);
   border: 1px solid var(--color-border);
-  width: min(860px, 100%);
+  width: min(var(--panel-max-width), 100%);
   text-align: center;
   box-shadow: var(--shadow-card);
   animation: panel-in var(--motion-slow) var(--motion-ease) both;

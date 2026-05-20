@@ -1,37 +1,72 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import { updateMe, setAuthToken } from "../api/client";
 import { store } from "../store";
-import { updateMe } from "../api/client";
 
-// ─── 个人信息编辑 ────────────────────────────────────
+const router = useRouter();
+
 const email = ref("");
 const editingInfo = ref(false);
 const savingInfo = ref(false);
 const infoMsg = ref("");
 const infoMsgType = ref<"ok" | "err">("ok");
 
+const newUsername = ref("");
+const editingUsername = ref(false);
+const savingUsername = ref(false);
+const usernameMsg = ref("");
+const usernameMsgType = ref<"ok" | "err">("ok");
+
+const oldPwd = ref("");
+const newPwd = ref("");
+const confirmPwd = ref("");
+const editingPwd = ref(false);
+const savingPwd = ref(false);
+const pwdMsg = ref("");
+const pwdMsgType = ref<"ok" | "err">("ok");
+
 function syncFromStore() {
   email.value = store.currentUser?.email ?? "";
 }
+
 onMounted(syncFromStore);
+
+function goBack() {
+  if (window.history.length > 1) {
+    router.back();
+  } else {
+    router.push("/home");
+  }
+}
+
+function applyUpdate(resp: Awaited<ReturnType<typeof updateMe>>) {
+  store.currentUser = resp.user;
+  if (resp.token) {
+    store.setToken(resp.token);
+    setAuthToken(resp.token);
+  }
+}
 
 function startEditInfo() {
   syncFromStore();
   infoMsg.value = "";
   editingInfo.value = true;
 }
+
 function cancelEditInfo() {
   editingInfo.value = false;
   infoMsg.value = "";
 }
+
 async function saveInfo() {
   savingInfo.value = true;
   infoMsg.value = "";
   try {
-    const updated = await updateMe(store.baseUrl, {
+    const resp = await updateMe(store.baseUrl, {
       email: email.value.trim(),
     });
-    store.currentUser = updated;
+    applyUpdate(resp);
     editingInfo.value = false;
     infoMsgType.value = "ok";
     infoMsg.value = "保存成功";
@@ -44,22 +79,17 @@ async function saveInfo() {
   }
 }
 
-// ─── 修改用户名 ───────────────────────────────────────
-const newUsername = ref("");
-const editingUsername = ref(false);
-const savingUsername = ref(false);
-const usernameMsg = ref("");
-const usernameMsgType = ref<"ok" | "err">("ok");
-
 function startEditUsername() {
   newUsername.value = store.currentUser?.username ?? "";
   usernameMsg.value = "";
   editingUsername.value = true;
 }
+
 function cancelEditUsername() {
   editingUsername.value = false;
   usernameMsg.value = "";
 }
+
 async function saveUsername() {
   if (!newUsername.value.trim()) {
     usernameMsgType.value = "err";
@@ -69,10 +99,10 @@ async function saveUsername() {
   savingUsername.value = true;
   usernameMsg.value = "";
   try {
-    const updated = await updateMe(store.baseUrl, {
+    const resp = await updateMe(store.baseUrl, {
       username: newUsername.value.trim(),
-    } as any);
-    store.currentUser = updated;
+    });
+    applyUpdate(resp);
     editingUsername.value = false;
     usernameMsgType.value = "ok";
     usernameMsg.value = "用户名修改成功";
@@ -85,15 +115,6 @@ async function saveUsername() {
   }
 }
 
-// ─── 修改密码 ─────────────────────────────────────────
-const oldPwd = ref("");
-const newPwd = ref("");
-const confirmPwd = ref("");
-const editingPwd = ref(false);
-const savingPwd = ref(false);
-const pwdMsg = ref("");
-const pwdMsgType = ref<"ok" | "err">("ok");
-
 function startEditPwd() {
   oldPwd.value = "";
   newPwd.value = "";
@@ -101,10 +122,12 @@ function startEditPwd() {
   pwdMsg.value = "";
   editingPwd.value = true;
 }
+
 function cancelEditPwd() {
   editingPwd.value = false;
   pwdMsg.value = "";
 }
+
 async function savePwd() {
   if (!oldPwd.value || !newPwd.value || !confirmPwd.value) {
     pwdMsgType.value = "err";
@@ -124,17 +147,18 @@ async function savePwd() {
   savingPwd.value = true;
   pwdMsg.value = "";
   try {
-    await updateMe(store.baseUrl, {
+    const resp = await updateMe(store.baseUrl, {
       old_password: oldPwd.value,
       new_password: newPwd.value,
-    } as any);
+    });
+    applyUpdate(resp);
     editingPwd.value = false;
     pwdMsgType.value = "ok";
     pwdMsg.value = "密码修改成功";
     store.addLog("密码已更新");
   } catch (e: any) {
     pwdMsgType.value = "err";
-    pwdMsg.value = e?.message || "修改失败，请检查原密码是否正确";
+    pwdMsg.value = e?.message || "修改失败，请检查当前密码是否正确";
   } finally {
     savingPwd.value = false;
   }
@@ -143,255 +167,413 @@ async function savePwd() {
 function formatDate(iso: string | undefined) {
   if (!iso) return "—";
   const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
 }
 </script>
 
 <template>
   <div class="profile-root">
-    <div class="profile-card">
-
-      <!-- 头像行 -->
-      <div class="avatar-row">
-        <div class="avatar">{{ (store.currentUser?.username || "?")[0].toUpperCase() }}</div>
-        <div class="id-block">
-          <div class="username-big">{{ store.currentUser?.username }}</div>
+    <section class="profile-panel surface-panel">
+      <button class="back-btn" @click="goBack" aria-label="返回上一页">
+        <span aria-hidden="true">‹</span>
+        返回
+      </button>
+      <header class="profile-header">
+        <div class="avatar">
+          {{ (store.currentUser?.username || "?")[0].toUpperCase() }}
+        </div>
+        <div class="identity">
+          <span class="eyebrow">个人中心</span>
+          <h1>{{ store.currentUser?.username || "未登录用户" }}</h1>
           <div class="meta-row">
-            <span v-if="store.currentUser?.is_admin" class="badge admin">管理员</span>
-            <span v-else class="badge normal">普通用户</span>
-            <span class="joined">注册于 {{ formatDate(store.currentUser?.created_at) }}</span>
+            <span :class="['role-badge', store.currentUser?.is_admin ? 'admin' : 'normal']">
+              {{ store.currentUser?.is_admin ? "管理员" : "普通用户" }}
+            </span>
+            <span>注册于 {{ formatDate(store.currentUser?.created_at) }}</span>
           </div>
         </div>
-      </div>
+      </header>
 
-      <!-- ① 个人信息 -->
-      <section class="block">
+      <section class="profile-block">
         <div class="block-header">
-          <span class="block-title">个人信息</span>
-          <button v-if="!editingInfo" class="btn-link" @click="startEditInfo">编辑</button>
+          <div>
+            <span class="section-label">Account</span>
+            <h2>个人信息</h2>
+          </div>
+          <button v-if="!editingInfo" class="btn ghost" @click="startEditInfo">编辑</button>
         </div>
 
         <div v-if="!editingInfo" class="info-grid">
           <div class="info-item">
-            <span class="info-label">用户名</span>
-            <span class="info-value">{{ store.currentUser?.username || '—' }}</span>
+            <span>用户名</span>
+            <strong>{{ store.currentUser?.username || "—" }}</strong>
           </div>
           <div class="info-item">
-            <span class="info-label">邮箱</span>
-            <span class="info-value">{{ store.currentUser?.email || '—' }}</span>
+            <span>邮箱</span>
+            <strong>{{ store.currentUser?.email || "—" }}</strong>
           </div>
         </div>
 
-        <div v-else class="edit-col">
+        <div v-else class="edit-stack">
           <label class="field">
-            <span class="field-label">邮箱</span>
+            <span>邮箱</span>
             <input v-model="email" type="email" class="input" placeholder="请输入邮箱" />
           </label>
           <div class="action-row">
-            <button class="btn primary" :disabled="savingInfo" @click="saveInfo">
-              <span v-if="savingInfo" class="spinner-small"></span>
-              {{ savingInfo ? "保存中…" : "保存" }}
+            <button class="btn solid" :disabled="savingInfo" @click="saveInfo">
+              {{ savingInfo ? "保存中..." : "保存" }}
             </button>
             <button class="btn ghost" :disabled="savingInfo" @click="cancelEditInfo">取消</button>
           </div>
-          <p v-if="infoMsg" :class="['msg', infoMsgType]">{{ infoMsg }}</p>
         </div>
-
-        <p v-if="!editingInfo && infoMsg" :class="['msg', infoMsgType]">{{ infoMsg }}</p>
+        <p v-if="infoMsg" :class="['msg', infoMsgType]">{{ infoMsg }}</p>
       </section>
 
-      <div class="divider"></div>
-
-      <!-- ② 修改用户名 -->
-      <section class="block">
+      <section class="profile-block">
         <div class="block-header">
-          <span class="block-title">修改用户名</span>
-          <button v-if="!editingUsername" class="btn-link" @click="startEditUsername">修改</button>
+          <div>
+            <span class="section-label">Username</span>
+            <h2>修改用户名</h2>
+          </div>
+          <button v-if="!editingUsername" class="btn ghost" @click="startEditUsername">修改</button>
         </div>
 
-        <div v-if="!editingUsername" class="hint-text">点击右侧「修改」可更换登录用户名</div>
-
-        <div v-else class="edit-col">
+        <p v-if="!editingUsername" class="hint">用户名会用于登录和导航展示。</p>
+        <div v-else class="edit-stack">
           <label class="field">
-            <span class="field-label">新用户名</span>
+            <span>新用户名</span>
             <input v-model="newUsername" class="input" placeholder="请输入新用户名" />
           </label>
           <div class="action-row">
-            <button class="btn primary" :disabled="savingUsername" @click="saveUsername">
-              <span v-if="savingUsername" class="spinner-small"></span>
-              {{ savingUsername ? "保存中…" : "确认修改" }}
+            <button class="btn solid" :disabled="savingUsername" @click="saveUsername">
+              {{ savingUsername ? "保存中..." : "确认修改" }}
             </button>
-            <button class="btn ghost" :disabled="savingUsername" @click="cancelEditUsername">取消</button>
+            <button class="btn ghost" :disabled="savingUsername" @click="cancelEditUsername">
+              取消
+            </button>
           </div>
-          <p v-if="usernameMsg" :class="['msg', usernameMsgType]">{{ usernameMsg }}</p>
         </div>
-
-        <p v-if="!editingUsername && usernameMsg" :class="['msg', usernameMsgType]">{{ usernameMsg }}</p>
+        <p v-if="usernameMsg" :class="['msg', usernameMsgType]">{{ usernameMsg }}</p>
       </section>
 
-      <div class="divider"></div>
-
-      <!-- ③ 修改密码 -->
-      <section class="block">
+      <section class="profile-block">
         <div class="block-header">
-          <span class="block-title">修改密码</span>
-          <button v-if="!editingPwd" class="btn-link" @click="startEditPwd">修改</button>
+          <div>
+            <span class="section-label">Security</span>
+            <h2>修改密码</h2>
+          </div>
+          <button v-if="!editingPwd" class="btn ghost" @click="startEditPwd">修改</button>
         </div>
 
-        <div v-if="!editingPwd" class="hint-text">点击右侧「修改」可更换登录密码</div>
-
-        <div v-else class="edit-col">
+        <p v-if="!editingPwd" class="hint">修改后请使用新密码登录。</p>
+        <div v-else class="edit-stack">
           <label class="field">
-            <span class="field-label">当前密码</span>
+            <span>当前密码</span>
             <input v-model="oldPwd" type="password" class="input" placeholder="请输入当前密码" />
           </label>
           <label class="field">
-            <span class="field-label">新密码</span>
+            <span>新密码</span>
             <input v-model="newPwd" type="password" class="input" placeholder="至少 6 位" />
           </label>
           <label class="field">
-            <span class="field-label">确认新密码</span>
+            <span>确认新密码</span>
             <input v-model="confirmPwd" type="password" class="input" placeholder="再次输入新密码" />
           </label>
           <div class="action-row">
-            <button class="btn primary" :disabled="savingPwd" @click="savePwd">
-              <span v-if="savingPwd" class="spinner-small"></span>
-              {{ savingPwd ? "保存中…" : "确认修改" }}
+            <button class="btn solid" :disabled="savingPwd" @click="savePwd">
+              {{ savingPwd ? "保存中..." : "确认修改" }}
             </button>
             <button class="btn ghost" :disabled="savingPwd" @click="cancelEditPwd">取消</button>
           </div>
-          <p v-if="pwdMsg" :class="['msg', pwdMsgType]">{{ pwdMsg }}</p>
         </div>
-
-        <p v-if="!editingPwd && pwdMsg" :class="['msg', pwdMsgType]">{{ pwdMsg }}</p>
+        <p v-if="pwdMsg" :class="['msg', pwdMsgType]">{{ pwdMsg }}</p>
       </section>
-
-    </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .profile-root {
-  padding: 40px 24px;
-  display: flex;
-  justify-content: center;
-  background: #fafafa;
-  min-height: calc(100vh - 70px);
+  flex: 1;
+  padding: var(--space-6);
+  background: var(--color-bg);
 }
 
-.profile-card {
-  background: #ffffff;
-  border: 1px solid #e8e0e2;
-  border-radius: 10px;
-  padding: 36px 40px;
-  width: min(580px, 100%);
-  box-shadow: 0 4px 24px rgba(139, 41, 66, 0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+.profile-panel {
+  max-width: var(--panel-max-width);
+  margin: 0 auto;
+  padding: var(--space-8);
+  animation: panel-in var(--motion-slow) var(--motion-ease) both;
 }
 
-/* 头像行 */
-.avatar-row {
+.back-btn {
+  min-height: var(--control-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--space-5);
+  padding: 0 12px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.back-btn span {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.back-btn:hover {
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary);
+  transform: translateY(-1px);
+}
+
+.profile-header {
   display: flex;
   align-items: center;
-  gap: 20px;
-  margin-bottom: 28px;
-  padding-bottom: 28px;
-  border-bottom: 1px solid #f0e8eb;
+  gap: var(--space-5);
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid var(--color-border);
 }
+
 .avatar {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: #8b2942;
-  color: #fff;
-  font-size: 28px;
-  font-weight: 800;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius-card);
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 30px;
+  font-weight: 900;
   flex-shrink: 0;
 }
-.id-block { display: flex; flex-direction: column; gap: 8px; }
-.username-big { font-size: 22px; font-weight: 700; color: #1a1a1a; }
-.meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 100px; letter-spacing: 0.03em; }
-.badge.admin { background: #8b2942; color: #fff; }
-.badge.normal { background: #f5eef1; color: #8b2942; border: 1px solid #e4d0d6; }
-.joined { font-size: 12px; color: #8a8a8a; }
 
-/* 区块 */
-.block { padding: 22px 0; display: flex; flex-direction: column; gap: 14px; }
-.divider { height: 1px; background: #f0e8eb; }
-
-.block-header { display: flex; align-items: center; justify-content: space-between; }
-.block-title { font-size: 15px; font-weight: 700; color: #1a1a1a; }
-.btn-link {
-  font-size: 13px; font-weight: 600; color: #8b2942;
-  background: none; border: none; cursor: pointer; padding: 4px 8px;
-  border-radius: 4px; transition: background 0.15s;
+.identity {
+  min-width: 0;
 }
-.btn-link:hover { background: #fdf5f7; }
 
-.hint-text { font-size: 13px; color: #9a9a9a; }
+.eyebrow,
+.section-label {
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 
-/* 只读信息网格 */
-.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 32px; }
-.info-item { display: flex; flex-direction: column; gap: 4px; }
-.info-label { font-size: 11px; font-weight: 700; color: #8a8a8a; text-transform: uppercase; letter-spacing: 0.05em; }
-.info-value { font-size: 15px; color: #1a1a1a; font-weight: 500; }
+.identity h1 {
+  margin: 6px 0 8px;
+  color: var(--color-text);
+  font-size: 28px;
+  line-height: 1.2;
+}
 
-/* 编辑列 */
-.edit-col { display: flex; flex-direction: column; gap: 14px; }
-.field { display: flex; flex-direction: column; gap: 6px; }
-.field-label { font-size: 12px; font-weight: 700; color: #5c5c5c; }
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.role-badge.admin {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.role-badge.normal {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-border);
+}
+
+.profile-block {
+  padding: var(--space-6) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.profile-block:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.block-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.block-header h2 {
+  margin: 4px 0 0;
+  color: var(--color-text);
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.info-item {
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-bg);
+}
+
+.info-item span,
+.field span {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.info-item strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.edit-stack {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 520px;
+}
+
+.field {
+  display: block;
+}
 
 .input {
-  padding: 10px 12px;
-  border: 1px solid #d9cdd1;
-  border-radius: 6px;
-  font-size: 14px;
-  color: #1a1a1a;
-  background: #fff;
-  transition: border-color 0.15s;
-  outline: none;
   width: 100%;
-  box-sizing: border-box;
+  min-height: var(--control-lg);
+  padding: 0 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
 }
-.input:focus { border-color: #8b2942; box-shadow: 0 0 0 3px rgba(139,41,66,0.08); }
 
-/* 按钮 */
-.action-row { display: flex; gap: 10px; }
+.input:focus {
+  border-color: var(--color-primary);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
 .btn {
-  padding: 9px 20px; border-radius: 6px; font-size: 14px; font-weight: 600;
-  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  min-height: var(--control-md);
+  padding: 0 14px;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
   border: 1px solid transparent;
 }
-.btn.primary { background: #8b2942; color: #fff; border-color: #8b2942; }
-.btn.primary:hover:not(:disabled) { background: #7a2439; border-color: #7a2439; }
-.btn.ghost { background: #fff; color: #5c5c5c; border-color: #d9cdd1; }
-.btn.ghost:hover:not(:disabled) { border-color: #8b2942; color: #8b2942; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.spinner-small {
-  width: 14px; height: 14px;
-  border: 2px solid rgba(255,255,255,0.4);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
+.btn.ghost {
+  background: var(--color-surface);
+  border-color: var(--color-primary-border);
+  color: var(--color-primary);
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-/* 消息提示 */
-.msg { margin: 0; font-size: 13px; padding: 9px 12px; border-radius: 6px; }
-.msg.ok { background: #f0faf4; color: #15803d; border: 1px solid #bbf7d0; }
-.msg.err { background: #fff5f7; color: #9f1239; border: 1px solid #fecdd3; }
+.btn.ghost:hover:not(:disabled) {
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary);
+  transform: translateY(-1px);
+}
 
-@media (max-width: 520px) {
-  .profile-card { padding: 24px 20px; }
-  .info-grid { grid-template-columns: 1fr; }
+.btn.solid {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.btn.solid:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.msg {
+  margin: var(--space-4) 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.msg.ok {
+  background: #f0faf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.msg.err {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border: 1px solid #fecdd3;
+}
+
+@media (max-width: 640px) {
+  .profile-root {
+    padding: var(--space-4);
+  }
+
+  .profile-panel {
+    padding: var(--space-5);
+  }
+
+  .profile-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

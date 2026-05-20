@@ -58,6 +58,11 @@ export interface AuthResponse {
   user: UserDTO;
 }
 
+export interface UpdateMeResponse {
+  token?: string | null;
+  user: UserDTO;
+}
+
 export interface SlideSnapshot {
   timestamp: number;
   input: SlideRequest;
