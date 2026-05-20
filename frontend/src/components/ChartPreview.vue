@@ -1,32 +1,29 @@
 <script setup lang="ts">
 import * as echarts from "echarts";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, watch } from "vue";
+import { ref } from "vue";
 import type { EChartsOption } from "../types";
 
 const props = withDefaults(
   defineProps<{
     option?: EChartsOption | null;
-    width?: number;
+    /** 容器固定高度（px）；不传则由外部 CSS 决定 */
     height?: number;
     backgroundColor?: string;
   }>(),
   {
-    width: 900,
-    height: 420,
+    height: 320,
     backgroundColor: "#ffffff",
   }
 );
 
 const elRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
-
-const styleWidth = computed(() => `${props.width}px`);
-const styleHeight = computed(() => `${props.height}px`);
+let ro: ResizeObserver | null = null;
 
 function ensureChart() {
   if (!elRef.value) return null;
   if (!chart) {
-    // 用 svg 渲染，便于 getDataURL 导出图片
     chart = echarts.init(elRef.value, undefined, { renderer: "svg" });
   }
   return chart;
@@ -35,49 +32,55 @@ function ensureChart() {
 function render() {
   const c = ensureChart();
   if (!c) return;
-
   const opt = props.option;
   if (!opt || Object.keys(opt).length === 0) {
     c.clear();
     return;
   }
-
   c.setOption(opt, true);
+}
+
+function handleResize() {
+  chart?.resize();
 }
 
 onMounted(() => {
   render();
-  window.addEventListener("resize", render);
+  // ResizeObserver 精准监听容器大小变化，优于 window resize
+  if (elRef.value && typeof ResizeObserver !== "undefined") {
+    ro = new ResizeObserver(() => {
+      chart?.resize();
+    });
+    ro.observe(elRef.value);
+  }
+  // 兜底：window resize（Safari 老版本等）
+  window.addEventListener("resize", handleResize);
 });
 
 onBeforeUnmount(() => {
-  try {
-    window.removeEventListener("resize", render);
-  } catch {
-    // ignore
-  }
-  if (chart) {
-    chart.dispose();
-    chart = null;
-  }
+  ro?.disconnect();
+  ro = null;
+  window.removeEventListener("resize", handleResize);
+  chart?.dispose();
+  chart = null;
 });
 
 watch(
   () => props.option,
-  () => {
+  async () => {
+    await nextTick();
     render();
+    // 数据变化后也 resize 一次，防止容器尺寸未同步
+    chart?.resize();
   },
   { deep: true }
 );
 
 async function exportPngDataUrl() {
   await nextTick();
-  // 等一下让 ECharts 完成布局
   await new Promise((r) => setTimeout(r, 150));
   const c = ensureChart();
   if (!c) return null;
-
-  // getDataURL 返回：data:image/png;base64,XXXX
   try {
     const dataUrl = c.getDataURL({
       type: "png",
@@ -95,12 +98,22 @@ defineExpose({ exportPngDataUrl });
 
 <template>
   <div
-    ref="elRef"
-    :style="{
-      width: styleWidth,
-      height: styleHeight,
-      backgroundColor: backgroundColor,
-    }"
-  />
+    class="chart-wrap"
+    :style="{ height: `${height}px`, backgroundColor: backgroundColor }"
+  >
+    <div ref="elRef" class="chart-inner" />
+  </div>
 </template>
 
+<style scoped>
+.chart-wrap {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 6px;
+}
+.chart-inner {
+  width: 100%;
+  height: 100%;
+}
+</style>

@@ -199,7 +199,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="result.chartJsConfig && tgtChartjs" class="pv">
         <h3>Chart.js 预览</h3>
-        <div class="cj"><canvas ref="chartJsCanvas" width="420" height="260" /></div>
+        <div class="cj"><canvas ref="chartJsCanvas" /></div>
         <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(result.chartJsConfig, null, 2) }}</pre></details>
       </div>
       <div v-if="result.mermaidSource && tgtMermaid" class="pv wide">
@@ -337,7 +337,13 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 .cj {
-  overflow-x: auto;
+  width: 100%;
+  min-height: 240px;
+  position: relative;
+}
+.cj canvas {
+  width: 100% !important;
+  height: 260px !important;
 }
 details summary {
   cursor: pointer;

@@ -7,9 +7,6 @@ import ChartPreview from '../components/ChartPreview.vue';
 const authTab = ref<'login' | 'register'>('login');
 const authName = ref("");
 const authPwd = ref("");
-const regFullName = ref("");
-const regEmail = ref("");
-const regOrg = ref("");
 const regConfirmPwd = ref("");
 const authLoading = ref(false);
 const authMessage = ref("");
@@ -26,9 +23,6 @@ async function doAuth() {
       : await register(store.baseUrl, {
           username: authName.value,
           password: authPwd.value,
-          full_name: regFullName.value,
-          email: regEmail.value,
-          organization: regOrg.value,
         });
     store.setToken(resp.token);
     store.currentUser = resp.user;
@@ -65,6 +59,10 @@ const usageTrendOption = {
         <div class="auth-form">
           <input v-model="authName" placeholder="用户名" class="input" />
           <input v-model="authPwd" type="password" placeholder="密码" class="input" />
+          <!-- 注册专属字段 -->
+          <template v-if="authTab === 'register'">
+            <input v-model="regConfirmPwd" type="password" placeholder="确认密码" class="input" />
+          </template>
           <button @click="doAuth" class="btn primary" :disabled="authLoading">
             {{ authLoading ? '处理中...' : (authTab === 'login' ? '登录' : '注册') }}
           </button>
@@ -108,17 +106,17 @@ const usageTrendOption = {
 .auth-card { background: white; padding: 40px; border-radius: 16px; border: 1px solid #dcefe5; width: 400px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.05); }
 .auth-tabs { display: flex; gap: 10px; margin: 20px 0; border-bottom: 1px solid #eee; }
 .auth-tabs button { flex: 1; padding: 10px; border: none; background: none; cursor: pointer; font-weight: bold; }
-.auth-tabs button.active { border-bottom: 2px solid #1f9d60; color: #1f9d60; }
+.auth-tabs button.active { border-bottom: 2px solid #8b2942; color: #8b2942; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; }
 .input { padding: 12px; border: 1px solid #ddd; border-radius: 8px; }
 .btn { padding: 12px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
-.primary { background: #1f9d60; color: white; }
-.secondary { background: white; border: 1px solid #1f9d60; color: #1f9d60; }
+.primary { background: #8b2942; color: white; }
+.secondary { background: white; border: 1px solid #8b2942; color: #8b2942; }
 .dashboard-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
-.stat-card { background: white; padding: 20px; border-radius: 12px; border: 1px solid #e2f3ea; }
+.stat-card { background: white; padding: 20px; border-radius: 12px; border: 1px solid #ede4e7; }
 .label { font-size: 14px; color: #666; }
-.value { font-size: 24px; font-weight: bold; color: #1f9d60; }
-.chart-panel { background: white; padding: 20px; border-radius: 12px; border: 1px solid #e2f3ea; margin-bottom: 20px; }
+.value { font-size: 24px; font-weight: bold; color: #8b2942; }
+.chart-panel { background: white; padding: 20px; border-radius: 12px; border: 1px solid #ede4e7; margin-bottom: 20px; }
 .action-row { display: flex; gap: 16px; justify-content: center; }
 .error { color: #b91c1c; font-size: 14px; }
 </style>
