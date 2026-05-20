@@ -81,6 +81,7 @@ async function onPickFile(event: Event) {
     zoomIdx.value = 2;
     leftTab.value = "document";
     rightTab.value = "fig";
+    uploadMessage.value = "";  // 上传成功后清空状态消息
     store.addLog(`成功上传并解析文件: ${resp.filename}，共 ${store.slides.length} 页`);
   } catch (e: any) {
     uploadMessage.value = e?.message || "上传失败";
@@ -96,9 +97,11 @@ function triggerFilePick() {
 
 function resetDocument() {
   if (!hasDoc.value) return;
+  if (!window.confirm("确定要更换文件吗？当前所有已生成结果将被清除，此操作不可撤销。")) return;
   store.slides = [];
   store.currentIndex = 0;
   store.docName = "";
+  uploadMessage.value = "";
   functionMode.value = "preview";
   selectedSnippet.value = "";
   zoomIdx.value = 2;
@@ -220,23 +223,33 @@ async function generateBoth() {
   slide.statusIllustration = "loading";
   slide.errorAnalyze = undefined;
   slide.errorIllustration = undefined;
-  try {
-    const [analyzeResp, illusResp] = await Promise.all([
-      analyze(store.baseUrl, slide.input),
-      illustration(store.baseUrl, slide.input),
-    ]);
-    slide.analyze = analyzeResp;
-    slide.illustration = illusResp;
+
+  // 独立处理两个请求，避免 Promise.all 让一个失败连累另一个状态
+  const [analyzeResult, illusResult] = await Promise.allSettled([
+    analyze(store.baseUrl, slide.input),
+    illustration(store.baseUrl, slide.input),
+  ]);
+
+  if (analyzeResult.status === "fulfilled") {
+    slide.analyze = analyzeResult.value;
     slide.statusAnalyze = "success";
-    slide.statusIllustration = "success";
-    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
-  } catch (e: any) {
+  } else {
     slide.statusAnalyze = "error";
+    slide.errorAnalyze = analyzeResult.reason?.message || String(analyzeResult.reason);
+    store.addLog(`图表失败: ${slide.errorAnalyze}`);
+  }
+
+  if (illusResult.status === "fulfilled") {
+    slide.illustration = illusResult.value;
+    slide.statusIllustration = "success";
+  } else {
     slide.statusIllustration = "error";
-    const msg = e?.message || String(e);
-    slide.errorAnalyze = msg;
-    slide.errorIllustration = msg;
-    store.addLog(`生成失败: ${msg}`);
+    slide.errorIllustration = illusResult.reason?.message || String(illusResult.reason);
+    store.addLog(`配图失败: ${slide.errorIllustration}`);
+  }
+
+  if (analyzeResult.status === "fulfilled" && illusResult.status === "fulfilled") {
+    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
   }
 }
 

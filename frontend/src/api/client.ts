@@ -133,6 +133,26 @@ export async function me(baseUrl: string) {
   return (await res.json()) as UserDTO;
 }
 
+export async function updateMe(
+  baseUrl: string,
+  payload: { full_name?: string; email?: string; organization?: string }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const res = await fetch(`${b}/api/me`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as UserDTO;
+}
+
 export async function adminUsers(baseUrl: string) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
