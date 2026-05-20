@@ -17,6 +17,9 @@ const slide = defineModel<SlideRequest>("slide", { required: true });
 const props = defineProps<{
   initialResult?: DisplayIllustrationResult | null;
 }>();
+const emit = defineEmits<{
+  result: [result: VizLabIllustrationResponse];
+}>();
 
 const imageModel = ref<"flux" | "sd" | "other">("flux");
 const styleRefUrl = ref("");
@@ -40,6 +43,7 @@ async function run() {
       lora_hint: loraHint.value.trim() || null,
       extra_style_words: extraStyleWords.value.trim() || null,
     });
+    emit("result", result.value);
   } catch (e: any) {
     err.value = e?.message || String(e);
   } finally {

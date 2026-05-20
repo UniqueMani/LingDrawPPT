@@ -5,7 +5,7 @@ import { analyze, extractText, illustration } from "../api/client";
 import ChartIntentPanel from "../components/ChartIntentPanel.vue";
 import ChartCodePanel from "../components/ChartCodePanel.vue";
 import IllustrationPromptPanel from "../components/IllustrationPromptPanel.vue";
-import type { SlideRequest } from "../types";
+import type { SlideRequest, VizLabChartCodeResponse, VizLabIllustrationResponse } from "../types";
 
 type FunctionMode = "preview" | "intent" | "code" | "illustration";
 type WorkflowStep = "intent" | "chart" | "illustration";
@@ -34,6 +34,7 @@ const activeWorkflowStep = ref<WorkflowStep>("intent");
 
 const currentSlide = computed(() => store.slides[store.currentIndex] ?? null);
 const currentIllustrationResult = computed(() => {
+  if (currentSlide.value?.vizIllustration) return currentSlide.value.vizIllustration;
   const illustrationResult = currentSlide.value?.illustration?.illustration;
   if (!illustrationResult) return null;
   return {
@@ -84,6 +85,9 @@ async function onPickFile(event: Event) {
         page: p.page,
         previewUrl: resolveAssetUrl(p.preview_url),
         thumbnailUrl: resolveAssetUrl(p.thumbnail_url || p.preview_url),
+        sourceTitle: p.title || `第 ${p.page} 页`,
+        sourceText: p.text || "",
+        sourceDataDescription: "",
         input: createInputFromPage(p.title || `第 ${p.page} 页`, p.text || ""),
         statusAnalyze: "idle",
         statusIllustration: "idle",
@@ -94,6 +98,7 @@ async function onPickFile(event: Event) {
     functionMode.value = "preview";
     activeWorkflowStep.value = "intent";
     zoomIdx.value = 2;
+    leftCollapsed.value = true;
     uploadMessage.value = "";
     store.addLog(`成功上传并解析文件: ${resp.filename}，共 ${store.slides.length} 页`);
   } catch (e: any) {
@@ -137,6 +142,14 @@ function goToPage(i: number) {
   store.currentIndex = i;
 }
 
+function restoreCurrentSlideSourceText() {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.input.topic = slide.sourceTitle || slide.input.topic;
+  slide.input.body = slide.sourceText || "";
+  slide.input.data_description = slide.sourceDataDescription || "";
+}
+
 let readerWheelLock = 0;
 
 function onReaderWheel(e: WheelEvent) {
@@ -157,6 +170,7 @@ function onReaderWheel(e: WheelEvent) {
 
 function selectWorkflowStep(step: WorkflowStep) {
   rightCollapsed.value = false;
+  restoreCurrentSlideSourceText();
   activeWorkflowStep.value = step;
   nextTick(() => ensureColumnWidths());
 }
@@ -251,36 +265,60 @@ const chartBusy = computed(() => currentSlide.value?.statusAnalyze === "loading"
 const illusBusy = computed(() => currentSlide.value?.statusIllustration === "loading");
 const anyBusy = computed(() => chartBusy.value || illusBusy.value);
 
+function onIntentPanelResult(semantic: Record<string, any>) {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.intentSemantic = semantic;
+  slide.statusAnalyze = "success";
+  slide.errorAnalyze = undefined;
+}
+
+function onChartCodeResult(result: VizLabChartCodeResponse) {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.chartCode = result;
+  slide.statusAnalyze = "success";
+  slide.errorAnalyze = undefined;
+}
+
+function onVizIllustrationResult(result: VizLabIllustrationResponse) {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.vizIllustration = result;
+  slide.statusIllustration = "success";
+  slide.errorIllustration = undefined;
+}
+
 function workflowStepStatus(step: WorkflowStep) {
   const slide = currentSlide.value;
   if (!slide) return "未运行";
   if (step === "intent") {
     if (slide.statusAnalyze === "loading") return "运行中";
     if (slide.statusAnalyze === "error") return "失败";
-    return slide.analyze?.semantic ? "已完成" : "未运行";
+    return slide.intentSemantic || slide.analyze?.semantic ? "已完成" : "未运行";
   }
   if (step === "chart") {
     if (slide.statusAnalyze === "loading") return "运行中";
     if (slide.statusAnalyze === "error") return "失败";
-    return slide.analyze?.chart ? "已完成" : "未运行";
+    return slide.chartCode || slide.analyze?.chart ? "已完成" : "未运行";
   }
   if (slide.statusIllustration === "loading") return "运行中";
   if (slide.statusIllustration === "error") return "失败";
-  return slide.illustration?.illustration ? "已完成" : "未运行";
+  return slide.vizIllustration || slide.illustration?.illustration ? "已完成" : "未运行";
 }
 
 function workflowStepSummary(step: WorkflowStep) {
   const slide = currentSlide.value;
   if (!slide) return "等待上传文档";
   if (step === "intent") {
-    const semantic = slide.analyze?.semantic;
+    const semantic = slide.intentSemantic || slide.analyze?.semantic;
     return semantic?.intent || slide.analyze?.chart?.intent || "判断页面是否需要图表";
   }
   if (step === "chart") {
     const chart = slide.analyze?.chart;
-    return chart?.chartType ? `已生成 ${chart.chartType}` : "生成数据图表与可渲染配置";
+    return slide.chartCode?.source ? `已生成图表代码 (${slide.chartCode.source})` : chart?.chartType ? `已生成 ${chart.chartType}` : "生成数据图表与可渲染配置";
   }
-  const illus = slide.illustration?.illustration;
+  const illus = slide.vizIllustration || slide.illustration?.illustration;
   return illus ? `keywords: ${illus.keywords.length}` : "生成插图关键词与 Prompt";
 }
 
@@ -311,7 +349,7 @@ const workFullRef = ref<HTMLElement | null>(null);
 const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
 const leftColumnWidth = ref(0);
 const rightColumnWidth = ref(0);
-const leftCollapsed = ref(false);
+const leftCollapsed = ref(true);
 const rightCollapsed = ref(false);
 const isSplitDragging = ref(false);
 const activeSplitter = ref<"left" | "right" | null>(null);
@@ -341,7 +379,7 @@ function ensureColumnWidths(force = false) {
   if (!el || !splitLayoutHorizontal.value) return;
   const width = el.getBoundingClientRect().width;
   const defaultLeft = clamp(width * 0.18, SIDE_LEFT_MIN, SIDE_LEFT_MAX);
-  const defaultRight = clamp(width * 0.22, SIDE_RIGHT_MIN, Math.min(SIDE_RIGHT_MAX, width * SIDE_RIGHT_MAX_RATIO));
+  const defaultRight = clamp(width * 0.32, SIDE_RIGHT_MIN, Math.min(SIDE_RIGHT_MAX, width * SIDE_RIGHT_MAX_RATIO));
   const baseLeft = force || leftColumnWidth.value === 0 ? defaultLeft : leftColumnWidth.value;
   const baseRight = force || rightColumnWidth.value === 0 ? defaultRight : rightColumnWidth.value;
   const next = normalizeColumnWidths(width, baseLeft, baseRight);
@@ -453,6 +491,13 @@ watch(
   () => hasDoc.value,
   (next) => {
     if (next) nextTick(() => ensureColumnWidths(true));
+  },
+);
+
+watch(
+  () => store.currentIndex,
+  () => {
+    restoreCurrentSlideSourceText();
   },
 );
 
@@ -725,9 +770,10 @@ onBeforeUnmount(() => {
               <ChartIntentPanel
                 v-if="currentSlide"
                 v-model:slide="currentSlide.input"
-                :initial-semantic="currentSlide.analyze?.semantic || null"
+                :initial-semantic="currentSlide.intentSemantic || currentSlide.analyze?.semantic || null"
                 :initial-reason="currentSlide.analyze?.chart?.reason || null"
                 :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
+                @result="onIntentPanelResult"
               />
             </section>
 
@@ -742,10 +788,12 @@ onBeforeUnmount(() => {
               <ChartCodePanel
                 v-if="currentSlide"
                 v-model:slide="currentSlide.input"
+                :initial-result="currentSlide.chartCode || null"
                 :initial-echarts-option="currentSlide.analyze?.chart?.echartsOption || null"
                 :initial-intent="currentSlide.analyze?.chart?.intent || null"
                 :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
                 :initial-reason="currentSlide.analyze?.chart?.reason || null"
+                @result="onChartCodeResult"
               />
             </section>
 
@@ -761,6 +809,7 @@ onBeforeUnmount(() => {
                 v-if="currentSlide"
                 v-model:slide="currentSlide.input"
                 :initial-result="currentIllustrationResult"
+                @result="onVizIllustrationResult"
               />
             </section>
           </div>
@@ -777,11 +826,24 @@ onBeforeUnmount(() => {
           <span class="fn-meta">第 {{ pageLabel }} 页 · {{ currentSlide?.input.topic }}</span>
         </header>
         <div class="fn-scroll">
-          <ChartIntentPanel v-if="functionMode === 'intent' && currentSlide" v-model:slide="currentSlide.input" />
-          <ChartCodePanel v-if="functionMode === 'code' && currentSlide" v-model:slide="currentSlide.input" />
+          <ChartIntentPanel
+            v-if="functionMode === 'intent' && currentSlide"
+            v-model:slide="currentSlide.input"
+            :initial-semantic="currentSlide.intentSemantic || currentSlide.analyze?.semantic || null"
+            @result="onIntentPanelResult"
+          />
+          <ChartCodePanel
+            v-if="functionMode === 'code' && currentSlide"
+            v-model:slide="currentSlide.input"
+            :initial-result="currentSlide.chartCode || null"
+            :initial-echarts-option="currentSlide.analyze?.chart?.echartsOption || null"
+            @result="onChartCodeResult"
+          />
           <IllustrationPromptPanel
             v-if="functionMode === 'illustration' && currentSlide"
             v-model:slide="currentSlide.input"
+            :initial-result="currentIllustrationResult"
+            @result="onVizIllustrationResult"
           />
         </div>
       </div>

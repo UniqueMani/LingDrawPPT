@@ -11,7 +11,7 @@ from backend.models import (
     VizLabIllustrationResponse,
     VizLabIntentResponse,
 )
-from backend.services.chart_code_llm import generate_chart_code_bundle
+from backend.services.chart_code_stable import generate_chart_code_bundle
 from backend.services.illus_strategy import generate_illustration_strategy
 from backend.services.semantic import analyze_semantics
 
@@ -37,7 +37,11 @@ async def viz_lab_chart_code(
             chartJsConfig=bundle.get("chartJsConfig"),
             mermaidSource=bundle.get("mermaidSource"),
             validationIssues=bundle.get("validationIssues") or [],
+            generatedTargets=bundle.get("generatedTargets") or [],
             source=bundle.get("source", "fallback"),
+            llmAttempted=bool(bundle.get("llmAttempted")),
+            llmSucceeded=bool(bundle.get("llmSucceeded")),
+            fallbackReason=str(bundle.get("fallbackReason") or ""),
             rawLlmExcerpt=bundle.get("rawLlmExcerpt"),
         )
     except Exception as e:

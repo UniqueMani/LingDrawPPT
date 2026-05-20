@@ -11,6 +11,9 @@ const props = defineProps<{
   initialReason?: string | null;
   initialChartType?: string | null;
 }>();
+const emit = defineEmits<{
+  result: [semantic: Record<string, any>];
+}>();
 
 const loading = ref(false);
 const err = ref("");
@@ -19,6 +22,58 @@ const displaySemantic = computed(() => semantic.value || props.initialSemantic |
 const displayReason = computed(() => displaySemantic.value?.reason || props.initialReason || "");
 const displayChartType = computed(() => displaySemantic.value?.chartType || props.initialChartType || "");
 
+const intentLabels: Record<string, string> = {
+  trend: "趋势分析",
+  comparison: "对比分析",
+  proportion: "占比构成",
+  process: "流程步骤",
+  hierarchy: "层级结构",
+  relation: "关系流向",
+};
+
+const chartTypeLabels: Record<string, string> = {
+  trend_line: "折线趋势图",
+  comparison_bar: "柱状对比图",
+  comparison_grouped: "分组柱状图",
+  proportion_pie: "饼图",
+  process_flow: "流程图",
+  hierarchy_tree: "层级树图",
+  relation_sankey: "桑基关系图",
+  data_table: "数据表格",
+};
+
+const sourceLabels: Record<string, string> = {
+  deepseek: "DeepSeek 模型",
+  "deepseek+validated": "DeepSeek 模型（已校验）",
+  llm: "大模型生成",
+  "llm+fallback": "大模型生成 + 本地规则补全",
+  fallback: "本地规则补全",
+  mock: "演示规则",
+};
+
+function labelOf(map: Record<string, string>, value: unknown) {
+  const key = String(value || "");
+  return map[key] || key || "未知";
+}
+
+function formatPercent(value: unknown) {
+  return `${(Number(value) * 100).toFixed(0)}%`;
+}
+
+function llmStatusLabel(item: Record<string, any>) {
+  if (!item.llmAttempted) return "未调用大模型";
+  return item.llmSucceeded ? "调用成功" : "调用失败，已降级";
+}
+
+const confidenceHelp = computed(() => {
+  const item = displaySemantic.value;
+  if (!item) return "";
+  if (item.source === "fallback" || item.source === "mock" || !item.llmAttempted) {
+    return "置信度来自本地规则：综合文本特征分数、第一候选与第二候选差距，以及数据是否足够结构化；它是启发式评分，不是严格概率。";
+  }
+  return "置信度由 DeepSeek 按提示自评给出，后端只做 0 到 1 的范围校验；若触发本地补全，会在来源和降级原因中标出。";
+});
+
 async function run() {
   loading.value = true;
   err.value = "";
@@ -26,6 +81,7 @@ async function run() {
   try {
     const r = await vizLabIntent(store.baseUrl, slide.value);
     semantic.value = r.semantic;
+    emit("result", r.semantic);
   } catch (e: any) {
     err.value = e?.message || String(e);
   } finally {
@@ -48,12 +104,30 @@ async function run() {
     <div v-if="displaySemantic" class="panel result">
       <h2>解析结果</h2>
       <div class="pills">
-        <span v-if="displaySemantic.intent" class="pill">intent: {{ displaySemantic.intent }}</span>
-        <span v-if="displayChartType" class="pill">chartType: {{ displayChartType }}</span>
+        <span v-if="displaySemantic.intent" class="pill">意图：{{ labelOf(intentLabels, displaySemantic.intent) }}</span>
+        <span v-if="displayChartType" class="pill">图表类型：{{ labelOf(chartTypeLabels, displayChartType) }}</span>
+        <span v-if="displaySemantic.source" class="pill">来源：{{ labelOf(sourceLabels, displaySemantic.source) }}</span>
         <span v-if="displaySemantic.confidence != null" class="pill"
-          >confidence: {{ (Number(displaySemantic.confidence) * 100).toFixed(0) }}%</span
+          >总体置信度：{{ formatPercent(displaySemantic.confidence) }}</span
+        >
+        <span v-if="displaySemantic.intentConfidence != null" class="pill"
+          >意图判断：{{ formatPercent(displaySemantic.intentConfidence) }}</span
+        >
+        <span v-if="displaySemantic.dataExtractionConfidence != null" class="pill"
+          >数据抽取：{{ formatPercent(displaySemantic.dataExtractionConfidence) }}</span
+        >
+        <span v-if="displaySemantic.chartSuitabilityConfidence != null" class="pill"
+          >图表适配：{{ formatPercent(displaySemantic.chartSuitabilityConfidence) }}</span
+        >
+        <span v-if="displaySemantic.runtimeMode" class="pill">运行模式：{{ labelOf(sourceLabels, displaySemantic.runtimeMode) }}</span>
+        <span v-if="displaySemantic.llmAttempted != null" class="pill"
+          >大模型状态：{{ llmStatusLabel(displaySemantic) }}</span
         >
       </div>
+      <p v-if="confidenceHelp" class="note">{{ confidenceHelp }}</p>
+      <p v-if="displaySemantic.fallbackReason" class="reason warn">
+        降级原因：{{ displaySemantic.fallbackReason }}
+      </p>
       <p v-if="displayReason" class="reason">{{ displayReason }}</p>
       <details open>
         <summary>semantic JSON（含 scores 可导出做实验）</summary>
@@ -140,6 +214,16 @@ async function run() {
   font-size: 12px;
   font-weight: 700;
 }
+.note {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-muted);
+  color: var(--color-muted);
+  line-height: 1.7;
+  font-size: 13px;
+}
 .reason {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -150,6 +234,9 @@ async function run() {
   color: var(--color-text-soft);
   line-height: 1.55;
   margin: 0 0 12px;
+}
+.reason.warn {
+  border-left-color: var(--color-warning);
 }
 details summary {
   cursor: pointer;

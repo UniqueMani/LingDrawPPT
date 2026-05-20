@@ -13,10 +13,14 @@ mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme: "neutral
 
 const slide = defineModel<SlideRequest>("slide", { required: true });
 const props = defineProps<{
+  initialResult?: VizLabChartCodeResponse | null;
   initialEchartsOption?: Record<string, any> | null;
   initialIntent?: string | null;
   initialChartType?: string | null;
   initialReason?: string | null;
+}>();
+const emit = defineEmits<{
+  result: [result: VizLabChartCodeResponse];
 }>();
 
 const tgtEcharts = ref(true);
@@ -29,10 +33,45 @@ const instructions = ref(
 const loading = ref(false);
 const err = ref("");
 const result = ref<VizLabChartCodeResponse | null>(null);
+const displayResult = computed(() => result.value || props.initialResult || null);
 const displayEchartsOption = computed(() =>
-  result.value ? result.value.echartsOption || null : props.initialEchartsOption || null
+  displayResult.value ? displayResult.value.echartsOption || null : props.initialEchartsOption || null
 );
-const hasDisplayResult = computed(() => Boolean(result.value || displayEchartsOption.value));
+const hasDisplayResult = computed(() => Boolean(displayResult.value || displayEchartsOption.value));
+
+const intentLabels: Record<string, string> = {
+  trend: "趋势分析",
+  comparison: "对比分析",
+  proportion: "占比构成",
+  process: "流程步骤",
+  hierarchy: "层级结构",
+  relation: "关系流向",
+};
+
+const chartTypeLabels: Record<string, string> = {
+  trend_line: "折线趋势图",
+  comparison_bar: "柱状对比图",
+  comparison_grouped: "分组柱状图",
+  proportion_pie: "饼图",
+  process_flow: "流程图",
+  hierarchy_tree: "层级树图",
+  relation_sankey: "桑基关系图",
+  data_table: "数据表格",
+};
+
+const sourceLabels: Record<string, string> = {
+  deepseek: "DeepSeek 模型",
+  llm: "大模型生成",
+  "llm+fallback": "大模型生成 + 本地规则补全",
+  fallback: "本地规则补全",
+  mock: "演示规则",
+};
+
+const targetLabels: Record<string, string> = {
+  echarts: "ECharts 图表配置",
+  chartjs: "Chart.js 图表配置",
+  mermaid: "Mermaid 图示源码",
+};
 
 const chartJsCanvas = ref<HTMLCanvasElement | null>(null);
 const mermaidHost = ref<HTMLDivElement | null>(null);
@@ -40,6 +79,27 @@ const echartsEl = ref<HTMLDivElement | null>(null);
 let chartJsInstance: Chart | null = null;
 let echartsInstance: echarts.ECharts | null = null;
 let echartsResizeObserver: ResizeObserver | null = null;
+
+function labelOf(map: Record<string, string>, value: unknown) {
+  const key = String(value || "");
+  return map[key] || key || "未知";
+}
+
+function targetLabelList(values: string[] | undefined) {
+  return (values || []).map((item) => labelOf(targetLabels, item)).join("、");
+}
+
+function llmStatusLabel(item: VizLabChartCodeResponse) {
+  if (!item.llmAttempted) return "未调用大模型";
+  return item.llmSucceeded ? "调用成功" : "调用失败，已降级";
+}
+
+function cleanupMermaidArtifacts(id: string) {
+  document.getElementById(id)?.remove();
+  document.querySelectorAll(`[id^="${id}"]`).forEach((node) => {
+    if (node instanceof HTMLElement || node instanceof SVGElement) node.remove();
+  });
+}
 
 function destroyChartJs() {
   if (chartJsInstance) {
@@ -61,16 +121,20 @@ async function renderMermaid(code: string) {
   const el = mermaidHost.value;
   if (!el) return;
   el.innerHTML = "";
+  el.classList.remove("mmd-err");
   if (!code?.trim()) {
     el.textContent = "（无 Mermaid）";
     return;
   }
+  const id = `mmd-${Date.now().toString(36)}`;
   try {
-    const id = `mmd-${Date.now().toString(36)}`;
+    await (mermaid as any).parse(code);
     const { svg } = await mermaid.render(id, code);
     el.innerHTML = svg;
   } catch (e: any) {
-    el.textContent = e?.message || String(e);
+    cleanupMermaidArtifacts(id);
+    const message = String(e?.message || e || "未知 Mermaid 渲染错误").split("\n").slice(0, 3).join("\n");
+    el.textContent = `Mermaid 预览失败：源码语法仍需调整。\n${message}`;
     el.classList.add("mmd-err");
   }
 }
@@ -133,6 +197,7 @@ async function run() {
       instructions: instructions.value || null,
     });
     result.value = r;
+    emit("result", r);
     await nextTick();
     await nextTick();
     if (r.echartsOption) renderEcharts(r.echartsOption);
@@ -146,18 +211,20 @@ async function run() {
 }
 
 watch(
-  () => result.value?.chartJsConfig,
+  () => displayResult.value?.chartJsConfig,
   async (cfg) => {
     await nextTick();
     if (cfg) renderChartJs(cfg);
-  }
+  },
+  { immediate: true }
 );
 watch(
-  () => result.value?.mermaidSource,
+  () => displayResult.value?.mermaidSource,
   async (code) => {
     await nextTick();
     if (code) await renderMermaid(code);
-  }
+  },
+  { immediate: true }
 );
 watch(
   () => displayEchartsOption.value,
@@ -197,23 +264,31 @@ onBeforeUnmount(() => {
 
     <div v-if="hasDisplayResult" class="panel meta">
       <div class="pills">
-        <span v-if="props.initialIntent" class="pill">intent: {{ props.initialIntent }}</span>
-        <span v-if="props.initialChartType" class="pill">chart: {{ props.initialChartType }}</span>
+        <span v-if="props.initialIntent" class="pill">意图：{{ labelOf(intentLabels, props.initialIntent) }}</span>
+        <span v-if="props.initialChartType" class="pill">图表类型：{{ labelOf(chartTypeLabels, props.initialChartType) }}</span>
+        <span v-if="displayResult?.source" class="pill">来源：{{ labelOf(sourceLabels, displayResult.source) }}</span>
+        <span v-if="displayResult?.generatedTargets?.length" class="pill">
+          输出：{{ targetLabelList(displayResult.generatedTargets) }}
+        </span>
+        <span v-if="displayResult?.llmAttempted != null" class="pill">
+          大模型状态：{{ llmStatusLabel(displayResult) }}
+        </span>
       </div>
       <p v-if="props.initialReason" class="reason">{{ props.initialReason }}</p>
-      <span v-if="result" class="src">来源：{{ result.source }}</span>
-      <div v-if="result?.validationIssues?.length" class="issues">
+      <p v-if="displayResult?.fallbackReason" class="reason warn">降级原因：{{ displayResult.fallbackReason }}</p>
+      <span v-if="displayResult" class="src">来源：{{ labelOf(sourceLabels, displayResult.source) }}</span>
+      <div v-if="displayResult?.validationIssues?.length" class="issues">
         <h3>自动校验</h3>
         <ul>
-          <li v-for="(it, i) in result.validationIssues" :key="i" :class="it.severity">
+          <li v-for="(it, i) in displayResult.validationIssues" :key="i" :class="it.severity">
             <b>{{ it.target }}</b> — {{ it.message }}
           </li>
         </ul>
       </div>
-      <p v-else-if="result" class="ok">未报告 error 级问题（仍需人工核对语义）。</p>
-      <details v-if="result?.rawLlmExcerpt">
+      <p v-else-if="displayResult" class="ok">未报告错误级问题（仍需人工核对语义）。</p>
+      <details v-if="displayResult?.rawLlmExcerpt">
         <summary>LLM 原文摘录</summary>
-        <pre class="pre sm">{{ result.rawLlmExcerpt }}</pre>
+        <pre class="pre sm">{{ displayResult.rawLlmExcerpt }}</pre>
       </details>
     </div>
 
@@ -223,15 +298,16 @@ onBeforeUnmount(() => {
         <div ref="echartsEl" class="ech" />
         <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(displayEchartsOption, null, 2) }}</pre></details>
       </div>
-      <div v-if="result?.chartJsConfig && tgtChartjs" class="pv">
+      <div v-if="displayResult?.chartJsConfig && tgtChartjs" class="pv">
         <h3>Chart.js 预览</h3>
         <div class="cj"><canvas ref="chartJsCanvas" width="420" height="260" /></div>
-        <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(result.chartJsConfig, null, 2) }}</pre></details>
+        <details><summary>JSON</summary><pre class="pre">{{ JSON.stringify(displayResult.chartJsConfig, null, 2) }}</pre></details>
       </div>
-      <div v-if="result?.mermaidSource && tgtMermaid" class="pv wide">
+      <div v-if="displayResult?.mermaidSource && tgtMermaid" class="pv wide">
         <h3>Mermaid 预览</h3>
+        <p class="hint">Mermaid 会渲染为浏览器内的 SVG 图示，适合流程图、关系图和简易数据图，不是单独的 PPT 图片文件。</p>
         <div ref="mermaidHost" class="mmd" />
-        <details><summary>源码</summary><pre class="pre">{{ result.mermaidSource }}</pre></details>
+        <details><summary>源码</summary><pre class="pre">{{ displayResult.mermaidSource }}</pre></details>
       </div>
     </div>
   </div>
@@ -364,6 +440,9 @@ onBeforeUnmount(() => {
   line-height: 1.55;
   margin: 0 0 12px;
 }
+.reason.warn {
+  border-left-color: var(--color-warning);
+}
 .src {
   font-size: 12px;
   font-weight: 700;
@@ -386,7 +465,7 @@ onBeforeUnmount(() => {
 }
 .previews {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: var(--space-4);
 }
 .pv {
@@ -399,17 +478,23 @@ onBeforeUnmount(() => {
   animation: panel-in var(--motion-slow) var(--motion-ease) both;
 }
 .pv.wide {
-  grid-column: 1 / -1;
+  grid-column: auto;
 }
 .pv h3 {
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 800;
 }
+.hint {
+  margin: -4px 0 12px;
+  color: var(--color-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .ech {
   width: 100%;
   min-width: 0;
-  height: clamp(260px, 38vh, 420px);
+  height: clamp(340px, 46vh, 520px);
 }
 .mmd {
   min-height: 180px;
@@ -429,6 +514,11 @@ onBeforeUnmount(() => {
 }
 .cj {
   overflow-x: auto;
+  min-height: 320px;
+}
+.cj canvas {
+  width: 100% !important;
+  max-height: 420px;
 }
 details summary {
   cursor: pointer;
