@@ -72,6 +72,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class UpdateMeRequest(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    organization: Optional[str] = None
+    old_password: Optional[str] = None
+    new_password: Optional[str] = None
+
+
 class UserDTO(BaseModel):
     id: int
     username: str
@@ -85,6 +94,11 @@ class UserDTO(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     user: UserDTO
+
+
+class UpdateMeResponse(BaseModel):
+    user: UserDTO
+    token: Optional[str] = None
 
 
 class ChartCodeValidationIssue(BaseModel):

@@ -4,6 +4,7 @@ import type {
   ExtractTextResponse,
   IllustrationStrategyResponse,
   SlideRequest,
+  UpdateMeResponse,
   UserDTO,
   VizLabChartCodeResponse,
   VizLabIllustrationResponse,
@@ -135,7 +136,14 @@ export async function me(baseUrl: string) {
 
 export async function updateMe(
   baseUrl: string,
-  payload: { full_name?: string; email?: string; organization?: string }
+  payload: {
+    username?: string;
+    full_name?: string;
+    email?: string;
+    organization?: string;
+    old_password?: string;
+    new_password?: string;
+  }
 ) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
@@ -150,7 +158,7 @@ export async function updateMe(
     const t = await res.text();
     throw new Error(`HTTP ${res.status}: ${t}`);
   }
-  return (await res.json()) as UserDTO;
+  return (await res.json()) as UpdateMeResponse;
 }
 
 export async function adminUsers(baseUrl: string) {
