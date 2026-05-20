@@ -70,9 +70,15 @@ export interface SlideState {
   page: number;
   previewUrl?: string;
   thumbnailUrl?: string;
+  sourceTitle: string;
+  sourceText: string;
+  sourceDataDescription?: string;
   input: SlideRequest;
   analyze?: AnalyzeResponse;
   illustration?: IllustrationStrategyResponse;
+  intentSemantic?: Record<string, any>;
+  chartCode?: VizLabChartCodeResponse;
+  vizIllustration?: VizLabIllustrationResponse;
   statusAnalyze: "idle" | "loading" | "success" | "error";
   statusIllustration: "idle" | "loading" | "success" | "error";
   errorAnalyze?: string;
@@ -95,7 +101,11 @@ export interface VizLabChartCodeResponse {
   chartJsConfig?: Record<string, any> | null;
   mermaidSource?: string | null;
   validationIssues: ChartCodeValidationIssue[];
+  generatedTargets: string[];
   source: string;
+  llmAttempted: boolean;
+  llmSucceeded: boolean;
+  fallbackReason: string;
   rawLlmExcerpt?: string | null;
 }
 

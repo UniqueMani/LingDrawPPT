@@ -308,3 +308,278 @@ def grid_to_grouped_series_extracted(grid: Dict[str, Any]) -> Dict[str, Any]:
 
     return {"categories": categories, "series": series}
 
+
+# --- Stable parsers used by the chart stability pass -----------------------
+# These definitions intentionally override the lightweight demo parsers above.
+# They keep the public function names unchanged while tightening numeric
+# extraction around common PPT business-chart language.
+
+_SPLIT_RE_STABLE = re.compile(r"[;；\n|]+")
+_METRIC_SPLIT_RE_STABLE = re.compile(r"[,，、;；\n]+")
+_NUM_UNIT_RE_STABLE = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*(万元|亿元|万|%|元|人|个|件|台|分)?"
+)
+
+
+def _source_text_for_structured_data(text: str) -> str:
+    raw = text or ""
+    m = re.search(r"(?:数据描述|data_description)\s*[:：]\s*(.+)$", raw, re.I | re.S)
+    return m.group(1).strip() if m else raw
+
+
+def _is_year_token(value: str) -> bool:
+    return bool(re.fullmatch(r"(?:19|20)\d{2}", str(value).strip()))
+
+
+def _clean_label(label: str) -> str:
+    label = re.sub(r"^\s*(?:topic|body|data_description|expected_intent|expected_chartType)\s*[:：]\s*", "", label, flags=re.I)
+    if "：" in label or ":" in label:
+        label = re.split(r"[:：]", label)[-1]
+    label = re.sub(r"[\s:=：，,；;]+$", "", label)
+    label = re.sub(r"^(?:和|及|以及|其中|分别为|为|是|则|行|列)\s*", "", label)
+    return label.strip(" -—>=").strip()
+
+
+def _to_float(value: str) -> float:
+    n = float(value)
+    return int(n) if n.is_integer() else n
+
+
+def _parse_named_series(text: str) -> Optional[Tuple[List[str], List[float], str]]:
+    source = _source_text_for_structured_data(text)
+    labels_match = re.search(
+        r"(?:时间序列|年份|年度|月份|季度|时间|x|X)\s*[:：=]\s*([A-Za-z0-9\u4e00-\u9fa5,\-，、\s]+?)(?=；|;|\n|$)",
+        source,
+        re.I,
+    )
+    if not labels_match:
+        return None
+    labels = [_clean_label(x) for x in re.split(r"[,，、\s]+", labels_match.group(1)) if _clean_label(x)]
+    labels = [x for x in labels if not re.fullmatch(r"单位|万元|亿元|元|%|人|个|件|台", x)]
+    if len(labels) < 2:
+        return None
+
+    tail = source[labels_match.end() :]
+    metric_match = re.search(
+        r"([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9\s/_-]{0,20})\s*[:：=]\s*(-?\d+(?:\.\d+)?(?:\s*[,，、]\s*-?\d+(?:\.\d+)?)+)",
+        tail,
+    )
+    if not metric_match:
+        return None
+    values = [_to_float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", metric_match.group(2))]
+    n = min(len(labels), len(values))
+    if n < 2:
+        return None
+    return labels[:n], values[:n], _clean_label(metric_match.group(1))
+
+
+def parse_time_series(text: str) -> Tuple[List[str], List[float]]:
+    text = text or ""
+    named = _parse_named_series(text)
+    if named:
+        x, y, _name = named
+        return x, y
+
+    pairs: List[Tuple[str, float]] = []
+    seen_spans: set[Tuple[int, int]] = set()
+    patterns = [
+        r"((?:19|20)\d{2})\s*年?\s*[:：=]?\s*(-?\d+(?:\.\d+)?)\s*(?:万元|亿元|万|元|%|人|个|件|台)?",
+        r"((?:[1-9]|1[0-2])月|Q[1-4]|第[一二三四1234]季度)\s*[:：=]?\s*(-?\d+(?:\.\d+)?)\s*(?:万元|亿元|万|元|%|人|个|件|台)?",
+    ]
+    for pattern in patterns:
+        for m in re.finditer(pattern, text, re.I):
+            label = m.group(1)
+            value = _to_float(m.group(2))
+            # A bare year immediately followed by another year is a label list,
+            # not a value pair.
+            if _is_year_token(str(value)):
+                continue
+            pairs.append((label, value))
+            seen_spans.add(m.span())
+
+    if len(pairs) >= 2:
+        return [p[0] for p in pairs], [p[1] for p in pairs]
+
+    n_years = re.search(r"过去\s*(\d+)\s*年", text)
+    if n_years:
+        n = int(n_years.group(1))
+        nums = [
+            _to_float(m.group(1))
+            for m in _NUM_UNIT_RE_STABLE.finditer(text)
+            if not _is_year_token(m.group(1)) and m.group(2)
+        ]
+        nums = nums[:n]
+        return [f"T{i+1}" for i in range(len(nums))], nums
+
+    return [], []
+
+
+def parse_percent_map(text: str) -> List[Tuple[str, float]]:
+    text = _source_text_for_structured_data(text or "")
+    out: List[Tuple[str, float]] = []
+    for part in _SPLIT_RE_STABLE.split(text):
+        for m in re.finditer(r"([^,，、;；\n:=：]+?)\s*[:：=]?\s*(-?\d+(?:\.\d+)?)\s*%", part):
+            label = _clean_label(m.group(1))
+            if label and label not in {"合计", "总计", "总和"} and not _is_year_token(label):
+                out.append((label, _to_float(m.group(2))))
+    deduped: List[Tuple[str, float]] = []
+    seen: set[str] = set()
+    for label, value in out:
+        key = re.sub(r"\s+", "", label)
+        if key not in seen:
+            seen.add(key)
+            deduped.append((label, value))
+    return deduped
+
+
+def parse_label_value_pairs(text: str) -> List[Tuple[str, float]]:
+    text = _source_text_for_structured_data(text or "")
+    out: List[Tuple[str, float]] = []
+
+    # Prefer structured "labels: ...; values: ..." descriptions.
+    label_match = re.search(
+        r"(?:产品|渠道|阶段|套餐|类别|labels?|分类)\s*[:：=]\s*([A-Za-z0-9\u4e00-\u9fa5\s,\-，、]+?)(?=；|;|\n|$)",
+        text,
+        re.I,
+    )
+    value_match = re.search(
+        r"(?:评分|同比增长率|增长率|转化率|conversion rate|价格|席位数|values?|数值|指标)\s*[:：=]\s*(-?\d+(?:\.\d+)?(?:\s*[,，、]\s*-?\d+(?:\.\d+)?)+)",
+        text,
+        re.I,
+    )
+    if label_match and value_match:
+        labels = [_clean_label(x) for x in re.split(r"[,，、]+", label_match.group(1)) if _clean_label(x)]
+        values = [_to_float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", value_match.group(1))]
+        return list(zip(labels[: len(values)], values[: len(labels)]))
+
+    for part in _METRIC_SPLIT_RE_STABLE.split(text):
+        part = part.strip()
+        if not part:
+            continue
+        if re.search(r"(?:19|20)\d{2}\s*年?", part):
+            continue
+        m = re.search(r"(.+?)\s*[:：=]?\s*(-?\d+(?:\.\d+)?)\s*(?:万元|亿元|万|元|%|人|个|件|台|分)?\s*$", part)
+        if not m:
+            continue
+        label = _clean_label(m.group(1))
+        label = re.sub(r"(评分|数值|数量|价格|收入|营收|销售额|同比增长率|增长率|转化率)$", "", label).strip()
+        if label and not _is_year_token(label):
+            out.append((label, _to_float(m.group(2))))
+    return out
+
+
+def parse_steps(text: str) -> List[str]:
+    text = text or ""
+    if re.search(r"(?:Pipeline|stages?|conversion rate)", text, re.I):
+        return []
+    if not re.search(r"流程|步骤|依次|经过|->|=>|→", text):
+        return []
+    normalized = re.sub(r"->|=>|→", "->", text)
+    if "->" in normalized:
+        parts = [p.strip() for p in normalized.split("->")]
+    else:
+        m = re.search(r"(?:依次经过|依次为|流程为|步骤为)(.+)", normalized)
+        parts = re.split(r"[,，、;；]", m.group(1)) if m else []
+    cleaned: List[str] = []
+    for p in parts:
+        p = _clean_label(re.sub(r"\d+(?:\.\d+)?\s*(?:万元|亿元|万|元|%|人|个|件|台)?", "", p))
+        if p and p not in cleaned:
+            cleaned.append(p[:32])
+    return cleaned
+
+
+def parse_hierarchy_chain(text: str) -> List[str]:
+    text = text or ""
+    if not re.search(r"层级|组织|架构|下设|隶属|上下级|层级链", text):
+        return []
+    m = re.search(r"(?:层级链|层级|组织结构)\s*[:：]\s*(.+)$", text)
+    source = m.group(1) if m else text
+    parts = [p.strip() for p in re.split(r"\s*(?:>|/|\\|->|=>|→)\s*", source) if p.strip()]
+    if len(parts) >= 2:
+        return [_clean_label(p).rstrip("。")[:32] for p in parts]
+    chain = re.findall(r"([\u4e00-\u9fa5A-Za-z0-9_-]{2,20})下设", text)
+    tail = re.search(r"下设([\u4e00-\u9fa5A-Za-z0-9_-]{2,20})(?:。|$)", text)
+    if chain and tail:
+        return chain + [tail.group(1)]
+    return []
+
+
+def _parse_row_metric_pairs(body: str) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for part in _METRIC_SPLIT_RE_STABLE.split(body or ""):
+        m = re.search(r"(.+?)\s*[:：=]?\s*(-?\d+(?:\.\d+)?)\s*(?:万元|亿元|万|元|%|人|个|件|台)?\s*$", part.strip())
+        if not m:
+            continue
+        label = _clean_label(m.group(1))
+        if label and not re.fullmatch(r"[\d.]+", label):
+            out[label] = _to_float(m.group(2))
+    return out
+
+
+def extract_entity_metric_blocks(text: str) -> List[Tuple[str, str]]:
+    text = _source_text_for_structured_data(text or "")
+    out: List[Tuple[str, str]] = []
+    for segment in _SPLIT_RE_STABLE.split(text):
+        if not segment.strip():
+            continue
+        m = re.match(r"\s*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9产品渠道套餐阶段\s_-]{0,24})\s*[:：=]?\s*(.+)$", segment.strip())
+        if not m:
+            continue
+        entity = _clean_label(m.group(1))
+        body = m.group(2).strip()
+        if _is_skipped_entity(entity) or len(_parse_row_metric_pairs(body)) < 2:
+            continue
+        out.append((entity, body))
+    return out
+
+
+def parse_entity_metric_grid(text: str) -> Optional[Dict[str, Any]]:
+    source = _source_text_for_structured_data(text or "")
+
+    # Structured matrix: 产品=A,B,C；营收=320,280,360万元；毛利率=38,42,35%
+    cat_match = re.search(
+        r"(?:产品|渠道|实体|类别|categories?)\s*[:：=]\s*([A-Za-z0-9\u4e00-\u9fa5\s,\-，、]+?)(?=；|;|\n|$)",
+        source,
+        re.I,
+    )
+    if cat_match:
+        categories = [_clean_label(x) for x in re.split(r"[,，、]+", cat_match.group(1)) if _clean_label(x)]
+        metrics: List[str] = []
+        cols: List[List[float]] = []
+        for m in re.finditer(
+            r"([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9\s/_-]{0,20})\s*[:：=]\s*(-?\d+(?:\.\d+)?(?:\s*[,，、]\s*-?\d+(?:\.\d+)?)+)",
+            source[cat_match.end() :],
+        ):
+            name = _clean_label(m.group(1))
+            if name in {"单位", "行", "列"}:
+                continue
+            values = [_to_float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", m.group(2))]
+            if len(values) >= len(categories) >= 2:
+                metrics.append(name)
+                cols.append(values[: len(categories)])
+        if len(metrics) >= 2:
+            matrix = [[cols[j][i] for j in range(len(metrics))] for i in range(len(categories))]
+            return {"categories": categories, "metrics": metrics, "matrix": matrix}
+
+    blocks = extract_entity_metric_blocks(source)
+    if len(blocks) < 2:
+        return None
+    categories: List[str] = []
+    rows: List[Dict[str, float]] = []
+    for entity, body in blocks:
+        metrics_here = _parse_row_metric_pairs(body)
+        if len(metrics_here) >= 2:
+            categories.append(entity)
+            rows.append(metrics_here)
+    if len(categories) < 2:
+        return None
+    metric_keys: List[str] = []
+    for row in rows:
+        for key in row:
+            if key not in metric_keys:
+                metric_keys.append(key)
+    if len(metric_keys) < 2:
+        return None
+    matrix = [[row.get(k) for k in metric_keys] for row in rows]
+    return {"categories": categories, "metrics": metric_keys, "matrix": matrix}
+

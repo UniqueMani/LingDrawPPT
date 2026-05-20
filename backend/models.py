@@ -106,7 +106,11 @@ class VizLabChartCodeResponse(BaseModel):
     chartJsConfig: Optional[Dict[str, Any]] = None
     mermaidSource: Optional[str] = None
     validationIssues: List[ChartCodeValidationIssue] = Field(default_factory=list)
+    generatedTargets: List[str] = Field(default_factory=list)
     source: str = "fallback"
+    llmAttempted: bool = False
+    llmSucceeded: bool = False
+    fallbackReason: str = ""
     rawLlmExcerpt: Optional[str] = None
 
 
