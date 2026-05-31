@@ -98,7 +98,10 @@ async function onPickFile(event: Event) {
     functionMode.value = "preview";
     activeWorkflowStep.value = "intent";
     zoomIdx.value = 2;
-    leftCollapsed.value = true;
+    leftCollapsed.value = false;
+    leftHoverMode.value = true;
+    leftHoverOpen.value = false;
+    leftPinned.value = false;
     uploadMessage.value = "";
     store.addLog(`成功上传并解析文件: ${resp.filename}，共 ${store.slides.length} 页`);
   } catch (e: any) {
@@ -115,6 +118,7 @@ function triggerFilePick() {
 
 function resetDocument() {
   if (!hasDoc.value) return;
+  if (!window.confirm("确定要更换文件吗？当前所有已生成结果将被清除，此操作不可撤销。")) return;
   store.slides = [];
   store.currentIndex = 0;
   store.docName = "";
@@ -122,24 +126,38 @@ function resetDocument() {
   activeWorkflowStep.value = "intent";
   zoomIdx.value = 2;
   uploadMessage.value = "";
+  leftHoverMode.value = false;
+  leftHoverOpen.value = false;
+  leftPinned.value = false;
   store.addLog("已清除当前文档，可重新上传");
 }
 
 function prevPage() {
   if (canPrev.value) {
     store.currentIndex -= 1;
+    scrollToSlide(store.currentIndex);
   }
 }
 
 function nextPage() {
   if (canNext.value) {
     store.currentIndex += 1;
+    scrollToSlide(store.currentIndex);
   }
 }
 
 function goToPage(i: number) {
   if (i < 0 || i >= store.slides.length) return;
   store.currentIndex = i;
+  scrollToSlide(i);
+}
+
+/** 滚动到指定页（连续阅读模式下平滑滚动） */
+function scrollToSlide(i: number) {
+  const el = slideRefs.value[i];
+  if (el && slidesViewportRef.value) {
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function restoreCurrentSlideSourceText() {
@@ -241,23 +259,33 @@ async function generateBoth() {
   slide.statusIllustration = "loading";
   slide.errorAnalyze = undefined;
   slide.errorIllustration = undefined;
-  try {
-    const [analyzeResp, illusResp] = await Promise.all([
-      analyze(store.baseUrl, slide.input),
-      illustration(store.baseUrl, slide.input),
-    ]);
-    slide.analyze = analyzeResp;
-    slide.illustration = illusResp;
+
+  // 图表与配图独立执行，一个失败不影响另一个
+  const [chartResult, illusResult] = await Promise.allSettled([
+    analyze(store.baseUrl, slide.input),
+    illustration(store.baseUrl, slide.input),
+  ]);
+
+  if (chartResult.status === "fulfilled") {
+    slide.analyze = chartResult.value;
     slide.statusAnalyze = "success";
-    slide.statusIllustration = "success";
-    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
-  } catch (e: any) {
+  } else {
     slide.statusAnalyze = "error";
+    slide.errorAnalyze = chartResult.reason?.message || String(chartResult.reason);
+    store.addLog(`图表生成失败: ${slide.errorAnalyze}`);
+  }
+
+  if (illusResult.status === "fulfilled") {
+    slide.illustration = illusResult.value;
+    slide.statusIllustration = "success";
+  } else {
     slide.statusIllustration = "error";
-    const msg = e?.message || String(e);
-    slide.errorAnalyze = msg;
-    slide.errorIllustration = msg;
-    store.addLog(`生成失败: ${msg}`);
+    slide.errorIllustration = illusResult.reason?.message || String(illusResult.reason);
+    store.addLog(`配图生成失败: ${slide.errorIllustration}`);
+  }
+
+  if (chartResult.status === "fulfilled" && illusResult.status === "fulfilled") {
+    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
   }
 }
 
@@ -346,6 +374,8 @@ const SIDE_RIGHT_MAX_RATIO = 0.5;
 const CENTER_MIN = 360;
 
 const workFullRef = ref<HTMLElement | null>(null);
+const slidesViewportRef = ref<HTMLElement | null>(null);
+const slideRefs = ref<(HTMLElement | null)[]>([]);
 const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
 const leftColumnWidth = ref(0);
 const rightColumnWidth = ref(0);
@@ -353,6 +383,12 @@ const leftCollapsed = ref(true);
 const rightCollapsed = ref(false);
 const isSplitDragging = ref(false);
 const activeSplitter = ref<"left" | "right" | null>(null);
+/** 上传文件后启用左边栏 hover 抽屉模式 */
+const leftHoverMode = ref(false);
+const leftHoverOpen = ref(false);
+/** 固定左边栏：为 true 时 mouseleave 不收起 */
+const leftPinned = ref(false);
+let flowObserver: IntersectionObserver | null = null;
 
 const splitLayoutHorizontal = computed(() => windowWidth.value >= SPLIT_LAYOUT_MIN_PX);
 
@@ -391,6 +427,16 @@ const workFullStyle = computed(() => {
   if (functionMode.value !== "preview") return {};
   if (!splitLayoutHorizontal.value) {
     return { display: "flex", flexDirection: "column" as const };
+  }
+  /** hover 抽屉模式下左边栏脱离 Grid 流 → 3 列：阅读区 | 分隔条 | 功能区 */
+  if (leftHoverMode.value) {
+    const rightWidth = rightCollapsed.value ? COLLAPSED_WIDTH : rightColumnWidth.value || SIDE_RIGHT_MIN;
+    const rightSplit = rightCollapsed.value ? 0 : SPLITTER_PX;
+    return {
+      display: "grid",
+      gridTemplateColumns: `minmax(${CENTER_MIN}px, 1fr) ${rightSplit}px ${rightWidth}px`,
+      alignItems: "stretch",
+    };
   }
   const leftWidth = leftCollapsed.value ? COLLAPSED_WIDTH : leftColumnWidth.value || SIDE_LEFT_MIN;
   const rightWidth = rightCollapsed.value ? COLLAPSED_WIDTH : rightColumnWidth.value || SIDE_RIGHT_MIN;
@@ -454,8 +500,21 @@ function startSplitDrag(e: PointerEvent, side: "left" | "right") {
 
 function toggleLeftCollapsed() {
   endSplitDrag();
-  leftCollapsed.value = !leftCollapsed.value;
-  nextTick(() => ensureColumnWidths());
+  if (leftHoverMode.value) {
+    // 点击固定：将 hover 抽屉切换为固定展开模式
+    if (leftPinned.value) {
+      // 已固定 → 取消固定，回到 hover 模式
+      leftPinned.value = false;
+      leftHoverOpen.value = false;
+    } else {
+      // 未固定 → 固定住
+      leftPinned.value = true;
+      leftHoverOpen.value = true;
+    }
+  } else {
+    leftCollapsed.value = !leftCollapsed.value;
+    nextTick(() => ensureColumnWidths());
+  }
 }
 
 function toggleRightCollapsed() {
@@ -497,20 +556,67 @@ watch(
 watch(
   () => store.currentIndex,
   () => {
-    restoreCurrentSlideSourceText();
+    // 切页时只同步工作流步骤，不再强制覆盖用户对 input 的手动编辑
+    // 如需恢复原文，用户可通过"重新分析意图"按钮刷新
   },
 );
 
+watch(
+  () => store.slides.length,
+  () => nextTick(() => setupFlowObserver()),
+);
+
+/** 连续阅读模式：用 IntersectionObserver 跟踪当前可见页（hover 与固定模式均生效） */
+function setupFlowObserver() {
+  destroyFlowObserver();
+  if (!slidesViewportRef.value) return;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      let best: IntersectionObserverEntry | null = null;
+      for (const e of entries) {
+        if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
+      }
+      if (best && best.intersectionRatio > 0.2) {
+        const idx = Number((best.target as HTMLElement).dataset.slideIndex);
+        if (!isNaN(idx) && idx >= 0 && idx < store.slides.length && idx !== store.currentIndex) {
+          store.currentIndex = idx;
+        }
+      }
+    },
+    { root: slidesViewportRef.value, threshold: [0, 0.25, 0.5, 0.75, 1] },
+  );
+  slideRefs.value.forEach((el) => el && observer.observe(el));
+  flowObserver = observer;
+}
+
+function destroyFlowObserver() {
+  if (flowObserver) {
+    flowObserver.disconnect();
+    flowObserver = null;
+  }
+}
+
+function setSlideRef(el: any, i: number) {
+  slideRefs.value[i] = el as HTMLElement | null;
+}
+
 onMounted(() => {
+  // 从其他页面返回时，如果已有已加载的文档，恢复 hover 模式状态
+  if (store.slides.length > 0) {
+    leftHoverMode.value = true;
+    leftCollapsed.value = false;
+  }
   window.addEventListener("keydown", previewKeydownSplitAware);
   window.addEventListener("resize", onWindowResize);
   nextTick(() => ensureColumnWidths(true));
+  nextTick(() => setupFlowObserver());
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", previewKeydownSplitAware);
   window.removeEventListener("resize", onWindowResize);
   endSplitDrag();
+  destroyFlowObserver();
 });
 </script>
 
@@ -543,17 +649,27 @@ onBeforeUnmount(() => {
 
     <div v-else ref="workFullRef" class="work-full" :style="workFullStyle">
       <template v-if="functionMode === 'preview'">
-        <aside class="page-control-column" :class="{ collapsed: leftCollapsed }" aria-label="页面控制">
+        <aside
+          class="page-control-column"
+          :class="{
+            collapsed: !leftHoverMode && leftCollapsed,
+            'page-control-column--hover': leftHoverMode,
+            'page-control-column--open': leftHoverOpen,
+          }"
+          @mouseenter="leftHoverMode && (leftHoverOpen = true)"
+          @mouseleave="leftHoverMode && !leftPinned && (leftHoverOpen = false)"
+          aria-label="页面控制"
+        >
           <button
             type="button"
             class="collapse-toggle collapse-toggle--left"
-            :title="leftCollapsed ? '展开页面控制' : '收起页面控制'"
-            :aria-label="leftCollapsed ? '展开页面控制' : '收起页面控制'"
-            @click="toggleLeftCollapsed"
+            :title="leftHoverMode ? '固定/取消固定页面控制' : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
+            :aria-label="leftHoverMode ? '固定/取消固定页面控制' : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
+            @click.stop="toggleLeftCollapsed"
           >
-            {{ leftCollapsed ? '›' : '‹' }}
+            {{ leftHoverMode ? (leftPinned ? '📌' : '📍') : (leftCollapsed ? '›' : '‹') }}
           </button>
-          <div v-if="leftCollapsed" class="collapsed-rail-label">页</div>
+          <div v-if="!leftHoverMode && leftCollapsed" class="collapsed-rail-label">页</div>
           <div v-else class="tools-fixed">
             <div class="tool-block page-control-block">
               <p class="tool-block-title">页面控制</p>
@@ -608,7 +724,7 @@ onBeforeUnmount(() => {
         </aside>
 
         <div
-          v-if="splitLayoutHorizontal"
+          v-if="splitLayoutHorizontal && !leftHoverMode"
           class="pane-splitter"
           :class="{ dragging: isSplitDragging && activeSplitter === 'left', disabled: leftCollapsed }"
           role="separator"
@@ -617,15 +733,31 @@ onBeforeUnmount(() => {
           title="拖动调整页面控制和预览宽度"
           @pointerdown="startSplitDrag($event, 'left')"
         />
-        <!-- 左：WPS 式真实页面预览 -->
+        <!-- 中：连续阅读模式（所有页面纵向排列） -->
         <section class="reader-column" aria-label="文档预览">
-          <div class="reader-viewport reader-viewport--solo" @wheel="onReaderWheel">
+          <div ref="slidesViewportRef" class="reader-viewport reader-viewport--flow">
             <div class="slide-stage" :style="{ transform: `scale(${zoomScale})` }">
-              <img v-if="currentPreviewUrl" class="slide-preview-img" :src="currentPreviewUrl" :alt="currentPageTitle" />
-              <article v-else class="slide-fallback">
-                <h2>{{ currentSlide?.input.topic }}</h2>
-                <p>{{ currentSlide?.input.body || "本页暂无可用预览。" }}</p>
-              </article>
+              <div
+                v-for="(s, i) in store.slides"
+                :key="s.id"
+                :ref="(el: any) => setSlideRef(el, i)"
+                class="flow-slide"
+                :class="{ 'flow-slide--active': i === store.currentIndex }"
+                :data-slide-index="i"
+              >
+                <img
+                  v-if="s.previewUrl"
+                  class="slide-preview-img"
+                  :src="s.previewUrl"
+                  :alt="s.input.topic"
+                  loading="lazy"
+                />
+                <article v-else class="slide-fallback">
+                  <h2>{{ s.input.topic }}</h2>
+                  <p>{{ s.input.body || "本页暂无可用预览。" }}</p>
+                </article>
+                <span class="flow-slide-label">{{ i + 1 }} / {{ store.slides.length }}</span>
+              </div>
             </div>
           </div>
         </section>
@@ -1037,6 +1169,144 @@ onBeforeUnmount(() => {
   justify-content: flex-start;
   padding-top: 12px;
   background: var(--color-surface);
+}
+
+/* ============ 左边栏 hover 抽屉模式 ============ */
+.page-control-column--hover {
+  position: absolute !important;
+  left: 0;
+  top: 0;
+  height: 100%;
+  z-index: 30;
+  width: 320px;
+  transform: translateX(calc(-100% + 56px));
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.12);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.page-control-column--hover:hover,
+.page-control-column--hover.page-control-column--open {
+  transform: translateX(0);
+}
+
+/* hover 模式下左边栏永远展开完整内容 */
+.page-control-column--hover .tools-fixed {
+  display: flex !important;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.page-control-column--hover .collapsed-rail-label {
+  display: none;
+}
+
+.page-control-column--hover .collapse-toggle {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 31;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.page-control-column--hover:hover .collapse-toggle,
+.page-control-column--hover.page-control-column--open .collapse-toggle {
+  opacity: 1;
+}
+
+/* ============ 连续阅读模式 ============ */
+.reader-viewport--flow {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: clamp(20px, 4vw, 56px);
+  background: var(--color-bg-muted);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.reader-viewport--flow .slide-stage {
+  width: min(1080px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.flow-slide {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 32px 0;
+  border-bottom: 1px dashed transparent;
+  transition: border-color 0.3s;
+}
+
+.flow-slide--active {
+  border-bottom-color: var(--color-primary-border);
+}
+
+.flow-slide-label {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(139, 41, 66, 0.08);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.flow-slide:hover .flow-slide-label {
+  opacity: 1;
+}
+
+.flow-slide--active .flow-slide-label {
+  opacity: 1;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.flow-slide .slide-preview-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: var(--color-surface);
+  border: 1px solid #d8d1d4;
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+  animation: panel-in var(--motion-slow) var(--motion-ease) both;
+}
+
+.flow-slide .slide-fallback {
+  width: min(960px, 100%);
+  min-height: 540px;
+  padding: clamp(32px, 5vw, 64px);
+  background: var(--color-surface);
+  border: 1px solid #d8d1d4;
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+}
+
+.flow-slide .slide-fallback h2 {
+  margin: 0 0 var(--space-5);
+  font-size: clamp(28px, 4vw, 48px);
+  color: var(--color-text);
+}
+
+.flow-slide .slide-fallback p {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.8;
+  color: var(--color-text-soft);
 }
 
 .collapse-toggle {
@@ -2116,6 +2386,14 @@ onBeforeUnmount(() => {
 
   .page-chips {
     max-height: 88px;
+  }
+
+  /* 移动端禁用 hover 抽屉 */
+  .page-control-column--hover {
+    position: relative !important;
+    transform: none;
+    width: 100%;
+    box-shadow: none;
   }
 }
 </style>
