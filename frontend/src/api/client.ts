@@ -174,3 +174,22 @@ export async function adminUsers(baseUrl: string) {
   return (await res.json()) as UserDTO[];
 }
 
+export async function getStats(baseUrl: string, days = 30) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const res = await fetch(`${b}/api/stats?days=${days}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as { events: Record<string, number>; detail: { name: string; label: string; count: number }[] };
+}
+
+export async function postStatsEvent(baseUrl: string, eventType: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<{ ok: boolean }>(`${b}/api/stats/event`, { event_type: eventType });
+}
+

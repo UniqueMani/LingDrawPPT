@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -39,4 +40,38 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
         if "organization" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN organization TEXT DEFAULT ''")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
+
+
+def record_event(user_id: int, event_type: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO usage_logs (user_id, event_type, created_at) VALUES (?, ?, ?)",
+            (user_id, event_type, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def get_user_stats(user_id: int, days: int = 30) -> dict:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT event_type, COUNT(*) as cnt
+            FROM usage_logs
+            WHERE user_id = ? AND created_at >= datetime('now', ? || ' days')
+            GROUP BY event_type
+            """,
+            (user_id, f"-{days}"),
+        ).fetchall()
+    return {row["event_type"]: row["cnt"] for row in rows}

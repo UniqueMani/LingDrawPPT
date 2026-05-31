@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from backend.db import record_event
 from backend.deps import require_user
 from backend.models import ExtractTextResponse
 from backend.services.doc_extract import extract_text_from_document
@@ -22,6 +23,7 @@ async def extract_text(
         text = str(result.get("text", "")).strip()
         if not text:
             raise ValueError("未提取到可用文本，请检查文件内容")
+        record_event(int(_["id"]), "upload")
         return ExtractTextResponse(
             filename=filename,
             text=text,

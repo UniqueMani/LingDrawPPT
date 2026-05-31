@@ -12,6 +12,7 @@ from backend.routers.admin import router as admin_router
 from backend.routers.analyze import router as analyze_router
 from backend.routers.auth import router as auth_router
 from backend.routers.illustration import router as illustration_router
+from backend.routers.stats import router as stats_router
 from backend.routers.upload import router as upload_router
 from backend.routers.viz_lab import router as viz_lab_router
 from backend.services.auth import ensure_admin_user, ensure_normal_user
@@ -39,6 +40,7 @@ app.include_router(illustration_router, prefix="/api", tags=["illustration"])
 app.include_router(upload_router, prefix="/api", tags=["upload"])
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(admin_router, prefix="/api", tags=["admin"])
+app.include_router(stats_router, prefix="/api", tags=["stats"])
 app.include_router(viz_lab_router, prefix="/api", tags=["viz-lab"])
 
 preview_path = Path(PREVIEW_DIR)

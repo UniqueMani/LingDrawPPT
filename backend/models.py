@@ -101,6 +101,15 @@ class UpdateMeResponse(BaseModel):
     token: Optional[str] = None
 
 
+class UsageStatsResponse(BaseModel):
+    events: Dict[str, int] = Field(default_factory=dict)
+    detail: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class RecordEventRequest(BaseModel):
+    event_type: str = Field(..., description="事件类型：upload / analyze / generate / adopt")
+
+
 class ChartCodeValidationIssue(BaseModel):
     target: str
     severity: str
