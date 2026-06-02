@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 backend/generated/
 .env.example
+node_modules/
+.workbuddy/
+.playwright-cli/
