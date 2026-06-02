@@ -233,8 +233,71 @@ def _normalize_lines(lines: List[str], max_lines: int = 240) -> str:
     return "\n".join(cleaned)
 
 
+def _normalized_text_block(
+    text: str,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    page_width: float,
+    page_height: float,
+) -> Dict[str, object] | None:
+    cleaned = (text or "").strip()
+    if not cleaned or page_width <= 0 or page_height <= 0:
+        return None
+    return {
+        "text": cleaned,
+        "x": max(0.0, min(1.0, x / page_width)),
+        "y": max(0.0, min(1.0, y / page_height)),
+        "width": max(0.0, min(1.0, width / page_width)),
+        "height": max(0.0, min(1.0, height / page_height)),
+    }
+
+
+def _extract_pdf_text_blocks(file_bytes: bytes) -> List[List[Dict[str, object]]]:
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return []
+
+    result: List[List[Dict[str, object]]] = []
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            blocks: List[Dict[str, object]] = []
+            for x0, y0, x1, y1, text, *_ in page.get_text("blocks"):
+                block = _normalized_text_block(
+                    str(text),
+                    float(x0),
+                    float(y0),
+                    float(x1 - x0),
+                    float(y1 - y0),
+                    float(page.rect.width),
+                    float(page.rect.height),
+                )
+                if block:
+                    blocks.append(block)
+            result.append(blocks)
+    finally:
+        doc.close()
+    return result
+
+
+def _shape_text(shape: object) -> str:
+    if getattr(shape, "has_table", False):
+        rows: List[str] = []
+        for row in shape.table.rows:
+            cells = [(cell.text or "").strip() for cell in row.cells]
+            line = " | ".join(cell for cell in cells if cell)
+            if line:
+                rows.append(line)
+        return "\n".join(rows)
+    return str(getattr(shape, "text", "") or "").strip()
+
+
 def extract_text_from_pdf(file_bytes: bytes) -> Dict[str, object]:
     reader = PdfReader(BytesIO(file_bytes))
+    blocks_by_page = _extract_pdf_text_blocks(file_bytes)
     lines: List[str] = []
     pages_detail: List[Dict[str, object]] = []
     for idx, page in enumerate(reader.pages, start=1):
@@ -242,7 +305,14 @@ def extract_text_from_pdf(file_bytes: bytes) -> Dict[str, object]:
         if text.strip():
             lines.append(text)
         title = (text.splitlines()[0].strip() if text.splitlines() else f"第 {idx} 页")[:80]
-        pages_detail.append({"page": idx, "title": title, "text": text.strip()})
+        pages_detail.append(
+            {
+                "page": idx,
+                "title": title,
+                "text": text.strip(),
+                "text_blocks": blocks_by_page[idx - 1] if idx <= len(blocks_by_page) else [],
+            }
+        )
     text = _normalize_lines(lines)
     first_line = text.splitlines()[0].strip() if text else ""
     return {
@@ -255,19 +325,32 @@ def extract_text_from_pdf(file_bytes: bytes) -> Dict[str, object]:
 
 def extract_text_from_pptx(file_bytes: bytes) -> Dict[str, object]:
     prs = Presentation(BytesIO(file_bytes))
+    page_width = float(prs.slide_width)
+    page_height = float(prs.slide_height)
     lines: List[str] = []
     pages_detail: List[Dict[str, object]] = []
     for idx, slide in enumerate(prs.slides, start=1):
         slide_lines: List[str] = []
+        text_blocks: List[Dict[str, object]] = []
         for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                text = (shape.text or "").strip()
-                if text:
-                    lines.append(text)
-                    slide_lines.append(text)
+            text = _shape_text(shape)
+            if text:
+                lines.append(text)
+                slide_lines.append(text)
+                block = _normalized_text_block(
+                    text,
+                    float(shape.left),
+                    float(shape.top),
+                    float(shape.width),
+                    float(shape.height),
+                    page_width,
+                    page_height,
+                )
+                if block:
+                    text_blocks.append(block)
         joined = "\n".join(slide_lines)
         title = (slide_lines[0] if slide_lines else f"第 {idx} 页")[:80]
-        pages_detail.append({"page": idx, "title": title, "text": joined})
+        pages_detail.append({"page": idx, "title": title, "text": joined, "text_blocks": text_blocks})
     text = _normalize_lines(lines)
     first_line = text.splitlines()[0].strip() if text else ""
     return {

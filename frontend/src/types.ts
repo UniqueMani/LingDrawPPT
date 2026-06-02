@@ -35,22 +35,99 @@ export interface IllustrationStrategyResponse {
   illustration: IllustrationResponse;
 }
 
+export interface TextBlock {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OCRRegionRequest {
+  preview_url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OCRRegionResponse {
+  text: string;
+  source: "ocr";
+}
+
 export interface ExtractTextResponse {
   filename: string;
   text: string;
   title: string;
   pages: number;
-  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string }>;
+  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
 }
 
 export interface UserDTO {
   id: number;
   username: string;
   is_admin: boolean;
+  is_active: boolean;
   full_name: string;
   email: string;
   organization: string;
   created_at: string;
+}
+
+export interface AdminUserDTO extends UserDTO {
+  disabled_at?: string | null;
+}
+
+export interface UploadedFileDTO {
+  id: number;
+  user_id: number;
+  username: string;
+  original_filename: string;
+  mime_type: string;
+  file_size: number;
+  pages: number;
+  parse_status: string;
+  error_message: string;
+  created_at: string;
+  deleted_at?: string | null;
+}
+
+export interface UsageLogDTO {
+  id: number;
+  user_id: number;
+  username: string;
+  event_type: string;
+  created_at: string;
+}
+
+export interface AdminAuditLogDTO {
+  id: number;
+  admin_user_id: number;
+  admin_username: string;
+  action_type: string;
+  target_type: string;
+  target_id: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface AdminOverviewDTO {
+  total_users: number;
+  active_users: number;
+  total_files: number;
+  failed_files: number;
+  recent_events: number;
+  event_counts: Record<string, number>;
+  recent_failed_files: UploadedFileDTO[];
+  recent_audit_logs: AdminAuditLogDTO[];
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface AuthResponse {
@@ -77,6 +154,7 @@ export interface SlideState {
   thumbnailUrl?: string;
   sourceTitle: string;
   sourceText: string;
+  textBlocks: TextBlock[];
   sourceDataDescription?: string;
   input: SlideRequest;
   analyze?: AnalyzeResponse;

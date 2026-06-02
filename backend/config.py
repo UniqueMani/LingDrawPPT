@@ -27,6 +27,7 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").s
 APP_HOST = os.getenv("APP_HOST", "127.0.0.1").strip()
 APP_PORT = int(os.getenv("APP_PORT", "8000"))
 PREVIEW_DIR = os.getenv("PREVIEW_DIR", "backend/generated/previews").strip()
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "backend/generated/uploads").strip()
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin").strip()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123").strip()

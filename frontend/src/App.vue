@@ -20,6 +20,9 @@ onMounted(async () => {
       setAuthToken(store.token);
       store.currentUser = await me(store.baseUrl);
       store.addLog(`欢迎回来，${store.currentUser.username}`);
+      if (router.currentRoute.value.meta.requiresAdmin && !store.currentUser.is_admin) {
+        router.push("/home");
+      }
     } catch {
       store.setToken("");
       setAuthToken("");
@@ -35,7 +38,8 @@ onMounted(async () => {
     <header class="navbar">
       <div class="brand" @click="router.push('/home')">LingDraw PPT Studio</div>
       <nav v-if="store.token" class="nav-links">
-        <span class="nav-group">流程</span>
+        <span class="nav-group">{{ store.currentUser?.is_admin ? "管理与创作" : "流程" }}</span>
+        <router-link v-if="store.currentUser?.is_admin" to="/admin" class="nav-item">管理后台</router-link>
         <router-link to="/home" class="nav-item">总览</router-link>
         <router-link to="/workspace" class="nav-item">工作台</router-link>
       </nav>
