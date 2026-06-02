@@ -8,3 +8,5 @@ node_modules/
 .env
 *.db
 .vscode/
+backend/generated/
+backend/uploads/

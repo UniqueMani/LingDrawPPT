@@ -3,8 +3,46 @@
   font-size: 15px;
   line-height: 1.5;
   font-weight: 400;
-  color: #1f2937;
-  background: #f5f7fb;
+  color: var(--color-text);
+  background: var(--color-bg);
+  --color-primary: #8b2942;
+  --color-primary-hover: #6d2135;
+  --color-primary-soft: #fffafb;
+  --color-primary-tint: #f5d4dc;
+  --color-primary-border: #d9cdd1;
+  --color-bg: #fafafa;
+  --color-bg-muted: #f3f1f2;
+  --color-surface: #ffffff;
+  --color-border: #e8e0e2;
+  --color-border-strong: #c4b8bc;
+  --color-text: #1a1a1a;
+  --color-text-soft: #3d3d3d;
+  --color-muted: #6b6b6b;
+  --color-muted-light: #8a8a8a;
+  --color-danger: #b91c1c;
+  --color-danger-soft: #fef2f2;
+  --color-warning: #a16207;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --control-sm: 36px;
+  --control-md: 40px;
+  --control-lg: 44px;
+  --panel-padding: 24px;
+  --panel-max-width: 1120px;
+  --shadow-card: 0 4px 24px rgba(139, 41, 66, 0.06);
+  --shadow-card-hover: 0 14px 36px rgba(139, 41, 66, 0.12);
+  --shadow-focus: 0 0 0 3px rgba(139, 41, 66, 0.1);
+  --radius-card: 8px;
+  --radius-control: 6px;
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -30,4 +68,76 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--motion-ease);
+}
+
+button {
+  min-height: var(--control-md);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.motion-card {
+  transition:
+    transform var(--motion-base) var(--motion-ease),
+    box-shadow var(--motion-base) var(--motion-ease),
+    border-color var(--motion-base) var(--motion-ease);
+}
+
+.motion-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.surface-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes soft-pulse {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
 }

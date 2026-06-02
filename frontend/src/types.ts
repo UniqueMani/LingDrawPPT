@@ -40,7 +40,25 @@ export interface ExtractTextResponse {
   text: string;
   title: string;
   pages: number;
-  pages_detail: Array<{ page: number; title: string; text: string }>;
+  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string }>;
+  file_id: number;
+}
+
+export interface FileRecord {
+  id: number;
+  filename: string;
+  original_filename: string;
+  file_size: number;
+  pages: number;
+  parse_status: string;
+  parse_error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FileDetail extends FileRecord {
+  pages_data: Array<{ page: number; title: string; text: string; preview_url?: string }>;
+  extracted_text: string;
 }
 
 export interface UserDTO {
@@ -58,6 +76,11 @@ export interface AuthResponse {
   user: UserDTO;
 }
 
+export interface UpdateMeResponse {
+  token?: string | null;
+  user: UserDTO;
+}
+
 export interface SlideSnapshot {
   timestamp: number;
   input: SlideRequest;
@@ -67,9 +90,18 @@ export interface SlideSnapshot {
 
 export interface SlideState {
   id: string;
+  page: number;
+  previewUrl?: string;
+  thumbnailUrl?: string;
+  sourceTitle: string;
+  sourceText: string;
+  sourceDataDescription?: string;
   input: SlideRequest;
   analyze?: AnalyzeResponse;
   illustration?: IllustrationStrategyResponse;
+  intentSemantic?: Record<string, any>;
+  chartCode?: VizLabChartCodeResponse;
+  vizIllustration?: VizLabIllustrationResponse;
   statusAnalyze: "idle" | "loading" | "success" | "error";
   statusIllustration: "idle" | "loading" | "success" | "error";
   errorAnalyze?: string;
@@ -92,7 +124,11 @@ export interface VizLabChartCodeResponse {
   chartJsConfig?: Record<string, any> | null;
   mermaidSource?: string | null;
   validationIssues: ChartCodeValidationIssue[];
+  generatedTargets: string[];
   source: string;
+  llmAttempted: boolean;
+  llmSucceeded: boolean;
+  fallbackReason: string;
   rawLlmExcerpt?: string | null;
 }
 
