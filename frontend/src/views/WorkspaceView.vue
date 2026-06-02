@@ -46,8 +46,6 @@ const hasDoc = computed(() => store.slides.length > 0);
 const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
 const canPrev = computed(() => store.currentIndex > 0);
 const canNext = computed(() => store.currentIndex < store.slides.length - 1);
-const currentPreviewUrl = computed(() => currentSlide.value?.previewUrl || "");
-const currentPageTitle = computed(() => currentSlide.value?.input.topic || `第 ${store.currentIndex + 1} 页`);
 
 function resolveAssetUrl(url?: string) {
   if (!url) return "";
@@ -171,24 +169,6 @@ function restoreCurrentSlideSourceText() {
   slide.input.data_description = slide.sourceDataDescription || "";
 }
 
-let readerWheelLock = 0;
-
-function onReaderWheel(e: WheelEvent) {
-  if (Math.abs(e.deltaY) < 40) return;
-  const now = Date.now();
-  if (now - readerWheelLock < 420) return;
-
-  if (e.deltaY > 0 && canNext.value) {
-    e.preventDefault();
-    nextPage();
-    readerWheelLock = now;
-  } else if (e.deltaY < 0 && canPrev.value) {
-    e.preventDefault();
-    prevPage();
-    readerWheelLock = now;
-  }
-}
-
 function selectWorkflowStep(step: WorkflowStep) {
   rightCollapsed.value = false;
   restoreCurrentSlideSourceText();
@@ -213,13 +193,13 @@ function onPreviewKeydown(e: KeyboardEvent) {
 
 function slideStatusShort(sl: (typeof store.slides)[0]) {
   const c =
-    sl.statusAnalyze === "success" ? "图表✓" : sl.statusAnalyze === "loading" ? "图表…" : "图表—";
+    sl.statusAnalyze === "success" ? "图表已生成" : sl.statusAnalyze === "loading" ? "图表生成中" : "图表未生成";
   const i =
     sl.statusIllustration === "success"
-      ? "配图✓"
+      ? "配图已生成"
       : sl.statusIllustration === "loading"
-        ? "配图…"
-        : "配图—";
+        ? "配图生成中"
+        : "配图未生成";
   return `${c} · ${i}`;
 }
 
@@ -635,7 +615,7 @@ onBeforeUnmount(() => {
 
         <div class="drop-zone" @click="triggerFilePick">
           <div v-if="!uploadLoading" class="hint">
-            <span class="icon">📁</span>
+            <span class="upload-symbol" aria-hidden="true">+</span>
             <span>点击选择文件</span>
           </div>
           <div v-else class="loader">
@@ -670,7 +650,7 @@ onBeforeUnmount(() => {
             :aria-label="leftHoverMode ? '固定/取消固定页面控制' : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
             @click.stop="toggleLeftCollapsed"
           >
-            {{ leftHoverMode ? (leftPinned ? '📌' : '📍') : (leftCollapsed ? '›' : '‹') }}
+            {{ leftHoverMode ? (leftPinned ? '‹' : '›') : (leftCollapsed ? '›' : '‹') }}
           </button>
           <div v-if="!leftHoverMode && leftCollapsed" class="collapsed-rail-label">页</div>
           <div v-else class="tools-fixed">
@@ -1073,8 +1053,19 @@ onBeforeUnmount(() => {
   color: var(--color-text-soft);
 }
 
-.icon {
-  font-size: 48px;
+.upload-symbol {
+  display: inline-flex;
+  width: 52px;
+  height: 52px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-card);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .loader {
