@@ -9,11 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vue-office/pptx": "^1.0.1",
     "chart.js": "^4.5.1",
     "echarts": "^6.0.0",
     "mermaid": "^11.14.0",
+    "pdfjs-dist": "^5.7.284",
     "pptxgenjs": "^4.0.1",
     "vue": "^3.5.30",
+    "vue-demi": "^0.14.6",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {

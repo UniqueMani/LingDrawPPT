@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.db import record_event
 from backend.deps import require_user
 from backend.models import (
     SlideRequest,
@@ -11,7 +12,7 @@ from backend.models import (
     VizLabIllustrationResponse,
     VizLabIntentResponse,
 )
-from backend.services.chart_code_llm import generate_chart_code_bundle
+from backend.services.chart_code_stable import generate_chart_code_bundle
 from backend.services.illus_strategy import generate_illustration_strategy
 from backend.services.semantic import analyze_semantics
 
@@ -21,6 +22,7 @@ router = APIRouter()
 @router.post("/viz-lab/intent", response_model=VizLabIntentResponse)
 async def viz_lab_intent(req: SlideRequest, _: dict = Depends(require_user)) -> VizLabIntentResponse:
     try:
+        record_event(int(_["id"]), "analyze")
         return VizLabIntentResponse(semantic=analyze_semantics(req))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"intent failed: {e}") from e
@@ -32,12 +34,17 @@ async def viz_lab_chart_code(
 ) -> VizLabChartCodeResponse:
     try:
         bundle = generate_chart_code_bundle(body.slide, body.targets, body.instructions)
+        record_event(int(_["id"]), "generate")
         return VizLabChartCodeResponse(
             echartsOption=bundle.get("echartsOption"),
             chartJsConfig=bundle.get("chartJsConfig"),
             mermaidSource=bundle.get("mermaidSource"),
             validationIssues=bundle.get("validationIssues") or [],
+            generatedTargets=bundle.get("generatedTargets") or [],
             source=bundle.get("source", "fallback"),
+            llmAttempted=bool(bundle.get("llmAttempted")),
+            llmSucceeded=bool(bundle.get("llmSucceeded")),
+            fallbackReason=str(bundle.get("fallbackReason") or ""),
             rawLlmExcerpt=bundle.get("rawLlmExcerpt"),
         )
     except Exception as e:
@@ -68,6 +75,7 @@ async def viz_lab_illustration(
         if body.style_ref_url:
             prompt += f" （参考图 URL：{body.style_ref_url.strip()}，待接 IP-Adapter）"
 
+        record_event(int(_["id"]), "generate")
         return VizLabIllustrationResponse(
             needIllus=bool(ill.get("needIllus")),
             keywords=list(ill.get("keywords") or []),
