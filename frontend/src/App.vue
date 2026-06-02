@@ -5,6 +5,21 @@ import { me, setAuthToken } from "./api/client";
 import { store } from "./store";
 
 const router = useRouter();
+const adminTabs = [
+  ["overview", "总览"],
+  ["users", "用户管理"],
+  ["files", "文件管理"],
+  ["logs", "日志维护"],
+] as const;
+
+function goHome() {
+  router.push(store.currentUser?.is_admin ? "/admin" : "/home");
+}
+
+function isAdminTabActive(tab: string) {
+  if (router.currentRoute.value.path !== "/admin") return false;
+  return (router.currentRoute.value.query.tab || "overview") === tab;
+}
 
 function logout() {
   store.setToken("");
@@ -22,6 +37,8 @@ onMounted(async () => {
       store.addLog(`欢迎回来，${store.currentUser.username}`);
       if (router.currentRoute.value.meta.requiresAdmin && !store.currentUser.is_admin) {
         router.push("/home");
+      } else if (store.currentUser.is_admin && ["/home", "/workspace"].includes(router.currentRoute.value.path)) {
+        router.push("/admin");
       }
     } catch {
       store.setToken("");
@@ -36,12 +53,27 @@ onMounted(async () => {
 <template>
   <div class="app-shell">
     <header class="navbar">
-      <div class="brand" @click="router.push('/home')">LingDraw PPT Studio</div>
+      <div class="brand" @click="goHome">LingDraw PPT Studio</div>
       <nav v-if="store.token" class="nav-links">
-        <span class="nav-group">{{ store.currentUser?.is_admin ? "管理与创作" : "流程" }}</span>
-        <router-link v-if="store.currentUser?.is_admin" to="/admin" class="nav-item">管理后台</router-link>
-        <router-link to="/home" class="nav-item">总览</router-link>
-        <router-link to="/workspace" class="nav-item">工作台</router-link>
+        <template v-if="store.currentUser?.is_admin">
+          <span class="nav-group">管理后台</span>
+          <router-link
+            v-for="tab in adminTabs"
+            :key="tab[0]"
+            :to="{ path: '/admin', query: { tab: tab[0] } }"
+            class="nav-item"
+            active-class="nav-route-active"
+            exact-active-class="nav-route-exact-active"
+            :class="{ 'router-link-active': isAdminTabActive(tab[0]) }"
+          >
+            {{ tab[1] }}
+          </router-link>
+        </template>
+        <template v-else>
+          <span class="nav-group">流程</span>
+          <router-link to="/home" class="nav-item">总览</router-link>
+          <router-link to="/workspace" class="nav-item">工作台</router-link>
+        </template>
       </nav>
       <div class="user-area">
         <template v-if="store.token">
