@@ -27,6 +27,12 @@ const routes = [
     component: () => import("../views/ProfileView.vue"),
     meta: { requiresAuth: true },
   },
+  {
+    path: "/admin",
+    name: "Admin",
+    component: () => import("../views/AdminView.vue"),
+    meta: { requiresAuth: true, requiresAdmin: true },
+  },
 ];
 
 const router = createRouter({
@@ -37,6 +43,10 @@ const router = createRouter({
 router.beforeEach((to, _from, next) => {
   if (to.meta.requiresAuth && !store.token) {
     next("/home");
+  } else if (to.meta.requiresAdmin && store.currentUser && !store.currentUser.is_admin) {
+    next("/home");
+  } else if (store.currentUser?.is_admin && (to.path === "/home" || to.path === "/workspace")) {
+    next("/admin");
   } else {
     next();
   }

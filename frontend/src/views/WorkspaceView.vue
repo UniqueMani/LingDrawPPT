@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { store } from "../store";
-import { analyze, extractText, illustration } from "../api/client";
+import { analyze, extractText, illustration, ocrRegion } from "../api/client";
 import ChartIntentPanel from "../components/ChartIntentPanel.vue";
 import ChartCodePanel from "../components/ChartCodePanel.vue";
 import IllustrationPromptPanel from "../components/IllustrationPromptPanel.vue";
-import type { SlideRequest, VizLabChartCodeResponse, VizLabIllustrationResponse } from "../types";
+import type { SlideRequest, TextBlock, VizLabChartCodeResponse, VizLabIllustrationResponse } from "../types";
 
 type FunctionMode = "preview" | "intent" | "code" | "illustration";
 type WorkflowStep = "intent" | "chart" | "illustration";
@@ -46,8 +46,6 @@ const hasDoc = computed(() => store.slides.length > 0);
 const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
 const canPrev = computed(() => store.currentIndex > 0);
 const canNext = computed(() => store.currentIndex < store.slides.length - 1);
-const currentPreviewUrl = computed(() => currentSlide.value?.previewUrl || "");
-const currentPageTitle = computed(() => currentSlide.value?.input.topic || `第 ${store.currentIndex + 1} 页`);
 
 function resolveAssetUrl(url?: string) {
   if (!url) return "";
@@ -77,7 +75,9 @@ async function onPickFile(event: Event) {
     store.slides = [];
 
     const pages =
-      resp.pages_detail.length > 0 ? resp.pages_detail : [{ page: 1, title: resp.title || "第1页", text: resp.text }];
+      resp.pages_detail.length > 0
+        ? resp.pages_detail
+        : [{ page: 1, title: resp.title || "第1页", text: resp.text, text_blocks: [] }];
 
     for (const p of pages) {
       store.slides.push({
@@ -87,6 +87,7 @@ async function onPickFile(event: Event) {
         thumbnailUrl: resolveAssetUrl(p.thumbnail_url || p.preview_url),
         sourceTitle: p.title || `第 ${p.page} 页`,
         sourceText: p.text || "",
+        textBlocks: p.text_blocks || [],
         sourceDataDescription: "",
         input: createInputFromPage(p.title || `第 ${p.page} 页`, p.text || ""),
         statusAnalyze: "idle",
@@ -98,7 +99,9 @@ async function onPickFile(event: Event) {
     functionMode.value = "preview";
     activeWorkflowStep.value = "intent";
     zoomIdx.value = 2;
-    leftCollapsed.value = true;
+    leftCollapsed.value = false;
+    leftHoverMode.value = true;
+    leftHoverOpen.value = false;
     uploadMessage.value = "";
     store.addLog(`成功上传并解析文件: ${resp.filename}，共 ${store.slides.length} 页`);
   } catch (e: any) {
@@ -115,6 +118,7 @@ function triggerFilePick() {
 
 function resetDocument() {
   if (!hasDoc.value) return;
+  if (!window.confirm("确定要更换文件吗？当前所有已生成结果将被清除，此操作不可撤销。")) return;
   store.slides = [];
   store.currentIndex = 0;
   store.docName = "";
@@ -122,24 +126,171 @@ function resetDocument() {
   activeWorkflowStep.value = "intent";
   zoomIdx.value = 2;
   uploadMessage.value = "";
+  leftHoverMode.value = false;
+  leftHoverOpen.value = false;
   store.addLog("已清除当前文档，可重新上传");
 }
 
 function prevPage() {
   if (canPrev.value) {
     store.currentIndex -= 1;
+    scrollToSlide(store.currentIndex);
   }
 }
 
 function nextPage() {
   if (canNext.value) {
     store.currentIndex += 1;
+    scrollToSlide(store.currentIndex);
   }
 }
 
 function goToPage(i: number) {
   if (i < 0 || i >= store.slides.length) return;
   store.currentIndex = i;
+  scrollToSlide(i);
+}
+
+/** 滚动到指定页（连续阅读模式下平滑滚动） */
+function scrollToSlide(i: number) {
+  const el = slideRefs.value[i];
+  if (el && slidesViewportRef.value) {
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function setPageThumbRef(el: any, i: number) {
+  pageThumbRefs.value[i] = el as HTMLElement | null;
+}
+
+function scrollCurrentThumbIntoView() {
+  pageThumbRefs.value[store.currentIndex]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+type RegionRect = { x: number; y: number; width: number; height: number };
+type RegionPoint = { x: number; y: number };
+
+function toggleRegionSelection() {
+  regionSelectionEnabled.value = !regionSelectionEnabled.value;
+  clearRegionSelection();
+  textPickerValue.value = "";
+}
+
+function closeTextPicker() {
+  textPickerOpen.value = false;
+  regionLoading.value = false;
+}
+
+function clearRegionSelection(closeDialog = true) {
+  regionDragging.value = false;
+  regionStart.value = null;
+  regionDraft.value = null;
+  regionSlideIndex.value = null;
+  regionError.value = "";
+  regionSource.value = null;
+  if (closeDialog) closeTextPicker();
+}
+
+function pointInOverlay(e: PointerEvent): RegionPoint {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  return {
+    x: clamp((e.clientX - rect.left) / rect.width, 0, 1),
+    y: clamp((e.clientY - rect.top) / rect.height, 0, 1),
+  };
+}
+
+function rectFromPoints(start: RegionPoint, end: RegionPoint): RegionRect {
+  return {
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    width: Math.abs(end.x - start.x),
+    height: Math.abs(end.y - start.y),
+  };
+}
+
+function startRegionSelection(e: PointerEvent, slideIndex: number) {
+  if (!regionSelectionEnabled.value || slideIndex !== store.currentIndex) return;
+  const overlay = e.currentTarget as HTMLElement;
+  overlay.setPointerCapture(e.pointerId);
+  regionStart.value = pointInOverlay(e);
+  regionDraft.value = { x: regionStart.value.x, y: regionStart.value.y, width: 0, height: 0 };
+  regionSlideIndex.value = slideIndex;
+  regionDragging.value = true;
+  textPickerOpen.value = false;
+  textPickerValue.value = "";
+  regionError.value = "";
+}
+
+function moveRegionSelection(e: PointerEvent) {
+  if (!regionDragging.value || !regionStart.value) return;
+  regionDraft.value = rectFromPoints(regionStart.value, pointInOverlay(e));
+}
+
+function blocksInRegion(blocks: TextBlock[], region: RegionRect) {
+  return blocks
+    .filter((block) => {
+      const right = Math.min(block.x + block.width, region.x + region.width);
+      const bottom = Math.min(block.y + block.height, region.y + region.height);
+      return right > Math.max(block.x, region.x) && bottom > Math.max(block.y, region.y);
+    })
+    .sort((a, b) => (Math.abs(a.y - b.y) > 0.015 ? a.y - b.y : a.x - b.x))
+    .map((block) => block.text.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function runOcrForRegion() {
+  const slide = currentSlide.value;
+  const region = regionDraft.value;
+  if (!slide?.previewUrl || !region) {
+    regionError.value = "当前页没有可用于 OCR 的预览图片。";
+    return;
+  }
+  regionLoading.value = true;
+  regionError.value = "";
+  textPickerValue.value = "";
+  textPickerOpen.value = true;
+  try {
+    const result = await ocrRegion(store.baseUrl, {
+      preview_url: new URL(slide.previewUrl, window.location.origin).pathname,
+      ...region,
+    });
+    textPickerValue.value = result.text;
+    regionSource.value = "ocr";
+    if (!result.text.trim()) regionError.value = "未识别到文字，请调整框选区域后重试。";
+  } catch (e: any) {
+    regionError.value = e?.message || "OCR 识别失败";
+  } finally {
+    regionLoading.value = false;
+    nextTick(() => textPickerRef.value?.focus());
+  }
+}
+
+async function finishRegionSelection(e: PointerEvent) {
+  if (!regionDragging.value || !regionDraft.value) return;
+  regionDragging.value = false;
+  (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  if (regionDraft.value.width < 0.01 || regionDraft.value.height < 0.01) {
+    regionError.value = "框选区域过小，请重新拖拽。";
+    return;
+  }
+  const nativeText = blocksInRegion(currentSlide.value?.textBlocks || [], regionDraft.value);
+  if (nativeText) {
+    textPickerValue.value = nativeText;
+    regionSource.value = "document";
+    textPickerOpen.value = true;
+    nextTick(() => textPickerRef.value?.focus());
+    return;
+  }
+  await runOcrForRegion();
+}
+
+function applySelectedText() {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.input.body = textPickerValue.value.trim();
+  regionSelectionEnabled.value = false;
+  clearRegionSelection();
 }
 
 function restoreCurrentSlideSourceText() {
@@ -148,24 +299,6 @@ function restoreCurrentSlideSourceText() {
   slide.input.topic = slide.sourceTitle || slide.input.topic;
   slide.input.body = slide.sourceText || "";
   slide.input.data_description = slide.sourceDataDescription || "";
-}
-
-let readerWheelLock = 0;
-
-function onReaderWheel(e: WheelEvent) {
-  if (Math.abs(e.deltaY) < 40) return;
-  const now = Date.now();
-  if (now - readerWheelLock < 420) return;
-
-  if (e.deltaY > 0 && canNext.value) {
-    e.preventDefault();
-    nextPage();
-    readerWheelLock = now;
-  } else if (e.deltaY < 0 && canPrev.value) {
-    e.preventDefault();
-    prevPage();
-    readerWheelLock = now;
-  }
 }
 
 function selectWorkflowStep(step: WorkflowStep) {
@@ -241,23 +374,33 @@ async function generateBoth() {
   slide.statusIllustration = "loading";
   slide.errorAnalyze = undefined;
   slide.errorIllustration = undefined;
-  try {
-    const [analyzeResp, illusResp] = await Promise.all([
-      analyze(store.baseUrl, slide.input),
-      illustration(store.baseUrl, slide.input),
-    ]);
-    slide.analyze = analyzeResp;
-    slide.illustration = illusResp;
+
+  // 图表与配图独立执行，一个失败不影响另一个
+  const [chartResult, illusResult] = await Promise.allSettled([
+    analyze(store.baseUrl, slide.input),
+    illustration(store.baseUrl, slide.input),
+  ]);
+
+  if (chartResult.status === "fulfilled") {
+    slide.analyze = chartResult.value;
     slide.statusAnalyze = "success";
-    slide.statusIllustration = "success";
-    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
-  } catch (e: any) {
+  } else {
     slide.statusAnalyze = "error";
+    slide.errorAnalyze = chartResult.reason?.message || String(chartResult.reason);
+    store.addLog(`图表生成失败: ${slide.errorAnalyze}`);
+  }
+
+  if (illusResult.status === "fulfilled") {
+    slide.illustration = illusResult.value;
+    slide.statusIllustration = "success";
+  } else {
     slide.statusIllustration = "error";
-    const msg = e?.message || String(e);
-    slide.errorAnalyze = msg;
-    slide.errorIllustration = msg;
-    store.addLog(`生成失败: ${msg}`);
+    slide.errorIllustration = illusResult.reason?.message || String(illusResult.reason);
+    store.addLog(`配图生成失败: ${slide.errorIllustration}`);
+  }
+
+  if (chartResult.status === "fulfilled" && illusResult.status === "fulfilled") {
+    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
   }
 }
 
@@ -337,7 +480,7 @@ function workflowStepClass(step: WorkflowStep) {
 const SPLITTER_PX = 6;
 /** 与下方 @media (max-width: 768px) 对齐：≤768 纵向堆叠，不显示拖拽条 */
 const SPLIT_LAYOUT_MIN_PX = 769;
-const COLLAPSED_WIDTH = 44;
+const COLLAPSED_WIDTH = 34;
 const SIDE_LEFT_MIN = 300;
 const SIDE_LEFT_MAX = 420;
 const SIDE_RIGHT_MIN = 260;
@@ -346,6 +489,20 @@ const SIDE_RIGHT_MAX_RATIO = 0.5;
 const CENTER_MIN = 360;
 
 const workFullRef = ref<HTMLElement | null>(null);
+const slidesViewportRef = ref<HTMLElement | null>(null);
+const slideRefs = ref<(HTMLElement | null)[]>([]);
+const pageThumbRefs = ref<(HTMLElement | null)[]>([]);
+const textPickerOpen = ref(false);
+const textPickerValue = ref("");
+const textPickerRef = ref<HTMLTextAreaElement | null>(null);
+const regionSelectionEnabled = ref(false);
+const regionDragging = ref(false);
+const regionStart = ref<RegionPoint | null>(null);
+const regionDraft = ref<RegionRect | null>(null);
+const regionSlideIndex = ref<number | null>(null);
+const regionLoading = ref(false);
+const regionError = ref("");
+const regionSource = ref<"document" | "ocr" | null>(null);
 const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
 const leftColumnWidth = ref(0);
 const rightColumnWidth = ref(0);
@@ -353,6 +510,11 @@ const leftCollapsed = ref(true);
 const rightCollapsed = ref(false);
 const isSplitDragging = ref(false);
 const activeSplitter = ref<"left" | "right" | null>(null);
+/** 上传文件后启用左边栏 hover 抽屉模式 */
+const leftHoverMode = ref(false);
+const leftHoverOpen = ref(false);
+let flowObserver: IntersectionObserver | null = null;
+const flowIntersectionRatios = new Map<Element, number>();
 
 const splitLayoutHorizontal = computed(() => windowWidth.value >= SPLIT_LAYOUT_MIN_PX);
 
@@ -391,6 +553,16 @@ const workFullStyle = computed(() => {
   if (functionMode.value !== "preview") return {};
   if (!splitLayoutHorizontal.value) {
     return { display: "flex", flexDirection: "column" as const };
+  }
+  /** hover 抽屉模式下左边栏脱离 Grid 流 → 3 列：阅读区 | 分隔条 | 功能区 */
+  if (leftHoverMode.value) {
+    const rightWidth = rightCollapsed.value ? COLLAPSED_WIDTH : rightColumnWidth.value || SIDE_RIGHT_MIN;
+    const rightSplit = rightCollapsed.value ? 0 : SPLITTER_PX;
+    return {
+      display: "grid",
+      gridTemplateColumns: `minmax(${CENTER_MIN}px, 1fr) ${rightSplit}px ${rightWidth}px`,
+      alignItems: "stretch",
+    };
   }
   const leftWidth = leftCollapsed.value ? COLLAPSED_WIDTH : leftColumnWidth.value || SIDE_LEFT_MIN;
   const rightWidth = rightCollapsed.value ? COLLAPSED_WIDTH : rightColumnWidth.value || SIDE_RIGHT_MIN;
@@ -454,8 +626,25 @@ function startSplitDrag(e: PointerEvent, side: "left" | "right") {
 
 function toggleLeftCollapsed() {
   endSplitDrag();
+  if (leftHoverMode.value) {
+    leftHoverOpen.value = !leftHoverOpen.value;
+    return;
+  }
   leftCollapsed.value = !leftCollapsed.value;
-  nextTick(() => ensureColumnWidths());
+  nextTick(() => {
+    ensureColumnWidths();
+    scrollCurrentThumbIntoView();
+  });
+}
+
+function openLeftHoverPanel() {
+  if (!leftHoverMode.value) return;
+  leftHoverOpen.value = true;
+  nextTick(() => scrollCurrentThumbIntoView());
+}
+
+function closeLeftHoverPanel() {
+  if (leftHoverMode.value) leftHoverOpen.value = false;
 }
 
 function toggleRightCollapsed() {
@@ -497,20 +686,77 @@ watch(
 watch(
   () => store.currentIndex,
   () => {
-    restoreCurrentSlideSourceText();
+    clearRegionSelection();
+    nextTick(() => scrollCurrentThumbIntoView());
   },
 );
 
+watch(
+  () => store.slides.length,
+  () => nextTick(() => setupFlowObserver()),
+);
+
+/** 连续阅读模式：用 IntersectionObserver 跟踪当前可见页（hover 与固定模式均生效） */
+function setupFlowObserver() {
+  destroyFlowObserver();
+  if (!slidesViewportRef.value) return;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        flowIntersectionRatios.set(e.target, e.intersectionRatio);
+      }
+      let bestTarget: Element | null = null;
+      let bestRatio = 0;
+      for (const [target, ratio] of flowIntersectionRatios) {
+        if (ratio > bestRatio) {
+          bestTarget = target;
+          bestRatio = ratio;
+        }
+      }
+      if (bestTarget && bestRatio > 0.2) {
+        const idx = Number((bestTarget as HTMLElement).dataset.slideIndex);
+        if (!isNaN(idx) && idx >= 0 && idx < store.slides.length && idx !== store.currentIndex) {
+          store.currentIndex = idx;
+        }
+      }
+    },
+    { root: slidesViewportRef.value, threshold: [0, 0.25, 0.5, 0.75, 1] },
+  );
+  slideRefs.value.forEach((el) => el && observer.observe(el));
+  flowObserver = observer;
+}
+
+function destroyFlowObserver() {
+  if (flowObserver) {
+    flowObserver.disconnect();
+    flowObserver = null;
+  }
+  flowIntersectionRatios.clear();
+}
+
+function setSlideRef(el: any, i: number) {
+  slideRefs.value[i] = el as HTMLElement | null;
+}
+
 onMounted(() => {
+  // 从其他页面返回时恢复 hover 侧栏，收起时仅保留窄触发轨道。
+  if (store.slides.length > 0) {
+    leftHoverMode.value = true;
+    leftCollapsed.value = false;
+    leftHoverOpen.value = false;
+  }
   window.addEventListener("keydown", previewKeydownSplitAware);
   window.addEventListener("resize", onWindowResize);
   nextTick(() => ensureColumnWidths(true));
+  nextTick(() => setupFlowObserver());
+  nextTick(() => scrollCurrentThumbIntoView());
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", previewKeydownSplitAware);
   window.removeEventListener("resize", onWindowResize);
   endSplitDrag();
+  destroyFlowObserver();
 });
 </script>
 
@@ -543,18 +789,29 @@ onBeforeUnmount(() => {
 
     <div v-else ref="workFullRef" class="work-full" :style="workFullStyle">
       <template v-if="functionMode === 'preview'">
-        <aside class="page-control-column" :class="{ collapsed: leftCollapsed }" aria-label="页面控制">
+        <aside
+          class="page-control-column"
+          :class="{
+            collapsed: !leftHoverMode && leftCollapsed,
+            'page-control-column--hover': leftHoverMode,
+            'page-control-column--open': leftHoverOpen,
+          }"
+          @mouseenter="openLeftHoverPanel"
+          @mouseleave="closeLeftHoverPanel"
+          aria-label="页面控制"
+        >
           <button
             type="button"
             class="collapse-toggle collapse-toggle--left"
-            :title="leftCollapsed ? '展开页面控制' : '收起页面控制'"
-            :aria-label="leftCollapsed ? '展开页面控制' : '收起页面控制'"
-            @click="toggleLeftCollapsed"
+            :title="leftHoverMode ? (leftHoverOpen ? '收起页面控制' : '展开页面控制') : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
+            :aria-label="leftHoverMode ? (leftHoverOpen ? '收起页面控制' : '展开页面控制') : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
+            @click.stop="toggleLeftCollapsed"
           >
-            {{ leftCollapsed ? '›' : '‹' }}
+            {{ leftHoverMode ? (leftHoverOpen ? '‹' : '›') : (leftCollapsed ? '›' : '‹') }}
           </button>
-          <div v-if="leftCollapsed" class="collapsed-rail-label">页</div>
-          <div v-else class="tools-fixed">
+          <div v-if="leftHoverMode" class="hover-rail-label">页面控制</div>
+          <div v-else-if="leftCollapsed" class="collapsed-rail-label">页</div>
+          <div v-if="leftHoverMode || !leftCollapsed" class="tools-fixed">
             <div class="tool-block page-control-block">
               <p class="tool-block-title">页面控制</p>
               <header class="preview-toolbar">
@@ -590,6 +847,7 @@ onBeforeUnmount(() => {
                 <button
                   v-for="(s, i) in store.slides"
                   :key="s.id"
+                  :ref="(el: any) => setPageThumbRef(el, i)"
                   type="button"
                   class="page-thumb"
                   :class="{ active: i === store.currentIndex }"
@@ -608,7 +866,7 @@ onBeforeUnmount(() => {
         </aside>
 
         <div
-          v-if="splitLayoutHorizontal"
+          v-if="splitLayoutHorizontal && !leftHoverMode"
           class="pane-splitter"
           :class="{ dragging: isSplitDragging && activeSplitter === 'left', disabled: leftCollapsed }"
           role="separator"
@@ -617,15 +875,70 @@ onBeforeUnmount(() => {
           title="拖动调整页面控制和预览宽度"
           @pointerdown="startSplitDrag($event, 'left')"
         />
-        <!-- 左：WPS 式真实页面预览 -->
+        <!-- 中：连续阅读模式（所有页面纵向排列） -->
         <section class="reader-column" aria-label="文档预览">
-          <div class="reader-viewport reader-viewport--solo" @wheel="onReaderWheel">
+          <button
+            type="button"
+            class="selection-trigger"
+            :class="{ active: regionSelectionEnabled }"
+            title="框选幻灯片区域并提取文字"
+            aria-label="框选幻灯片区域并提取文字"
+            @click="toggleRegionSelection"
+          >
+            {{ regionSelectionEnabled ? "退出框选" : "框选文字" }}
+          </button>
+          <div v-if="textPickerOpen" class="selection-popover" role="dialog" aria-label="确认提取文字">
+            <div class="selection-popover-head">
+              <strong>确认提取文字</strong>
+              <button type="button" class="selection-close" title="关闭" aria-label="关闭" @click="closeTextPicker">×</button>
+            </div>
+            <p v-if="regionLoading">正在识别框选区域...</p>
+            <p v-else>{{ regionSource === "document" ? "来源：文档文字块" : "来源：OCR 识别" }}。可编辑后写入正文框。</p>
+            <p v-if="regionError" class="selection-error">{{ regionError }}</p>
+            <textarea ref="textPickerRef" v-model="textPickerValue" rows="8" :disabled="regionLoading" />
+            <div class="selection-actions">
+              <button type="button" class="btn outline" :disabled="regionLoading || !regionDraft" @click="runOcrForRegion">重新 OCR</button>
+              <button type="button" class="btn solid selection-apply" :disabled="regionLoading" @click="applySelectedText">写入正文框</button>
+            </div>
+          </div>
+          <div ref="slidesViewportRef" class="reader-viewport reader-viewport--flow">
             <div class="slide-stage" :style="{ transform: `scale(${zoomScale})` }">
-              <img v-if="currentPreviewUrl" class="slide-preview-img" :src="currentPreviewUrl" :alt="currentPageTitle" />
-              <article v-else class="slide-fallback">
-                <h2>{{ currentSlide?.input.topic }}</h2>
-                <p>{{ currentSlide?.input.body || "本页暂无可用预览。" }}</p>
-              </article>
+              <div
+                v-for="(s, i) in store.slides"
+                :key="s.id"
+                :ref="(el: any) => setSlideRef(el, i)"
+                class="flow-slide"
+                :class="{ 'flow-slide--active': i === store.currentIndex }"
+                :data-slide-index="i"
+              >
+                <div v-if="s.previewUrl" class="slide-image-shell">
+                  <img class="slide-preview-img" :src="s.previewUrl" :alt="s.input.topic" loading="lazy" />
+                  <div
+                    v-if="regionSelectionEnabled && i === store.currentIndex"
+                    class="region-selection-overlay"
+                    @pointerdown="startRegionSelection($event, i)"
+                    @pointermove="moveRegionSelection"
+                    @pointerup="finishRegionSelection"
+                    @pointercancel="clearRegionSelection(false)"
+                  >
+                    <div
+                      v-if="regionDraft && regionSlideIndex === i"
+                      class="region-selection-box"
+                      :style="{
+                        left: `${regionDraft.x * 100}%`,
+                        top: `${regionDraft.y * 100}%`,
+                        width: `${regionDraft.width * 100}%`,
+                        height: `${regionDraft.height * 100}%`,
+                      }"
+                    />
+                  </div>
+                </div>
+                <article v-else class="slide-fallback">
+                  <h2>{{ s.input.topic }}</h2>
+                  <p>{{ s.input.body || "本页暂无可用预览。" }}</p>
+                </article>
+                <span class="flow-slide-label">{{ i + 1 }} / {{ store.slides.length }}</span>
+              </div>
             </div>
           </div>
         </section>
@@ -990,6 +1303,7 @@ onBeforeUnmount(() => {
 
 /* 预览模式下宽度由 grid + 可拖拽分隔条控制 */
 .reader-column {
+  position: relative;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1037,6 +1351,299 @@ onBeforeUnmount(() => {
   justify-content: flex-start;
   padding-top: 12px;
   background: var(--color-surface);
+}
+
+/* ============ 左边栏 hover 抽屉模式 ============ */
+.page-control-column--hover {
+  position: absolute !important;
+  left: 0;
+  top: 0;
+  height: 100%;
+  z-index: 30;
+  width: 320px;
+  transform: translateX(calc(-100% + 32px));
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.12);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.page-control-column--hover:hover,
+.page-control-column--hover.page-control-column--open {
+  transform: translateX(0);
+}
+
+.page-control-column--hover .tools-fixed {
+  display: flex !important;
+  padding: 0 var(--space-3) var(--space-3);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+.page-control-column--hover:hover .tools-fixed,
+.page-control-column--hover.page-control-column--open .tools-fixed {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.page-control-column--hover .collapsed-rail-label {
+  display: none;
+}
+
+.page-control-column--hover .hover-rail-label {
+  position: absolute;
+  right: 6px;
+  top: 58px;
+  writing-mode: vertical-rl;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  opacity: 1;
+  transition: opacity 0.14s ease;
+}
+
+.page-control-column--hover:hover .hover-rail-label,
+.page-control-column--hover.page-control-column--open .hover-rail-label {
+  opacity: 0;
+}
+
+.page-control-column--hover .collapse-toggle {
+  position: absolute;
+  right: 0;
+  top: 12px;
+  z-index: 31;
+  width: 32px;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  opacity: 1;
+  box-shadow: none;
+  transition: background var(--motion-base), color var(--motion-base), border-color var(--motion-base);
+}
+
+.page-control-column--hover:hover .collapse-toggle {
+  right: -32px;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+}
+
+/* ============ 连续阅读模式 ============ */
+.reader-viewport--flow {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: clamp(20px, 4vw, 56px);
+  background: var(--color-bg-muted);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.selection-trigger {
+  position: absolute;
+  top: 14px;
+  right: 48px;
+  z-index: 12;
+  width: auto;
+  min-width: 78px;
+  height: 38px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-size: 15px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: var(--shadow-card);
+  transition: background var(--motion-base), color var(--motion-base), transform var(--motion-base);
+}
+
+.selection-trigger:hover,
+.selection-trigger.active {
+  background: var(--color-primary);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.selection-popover {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  z-index: 20;
+  width: min(420px, calc(100% - 32px));
+  padding: var(--space-4);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: 0 18px 44px rgba(60, 35, 43, 0.18);
+}
+
+.selection-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.selection-popover p {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.selection-popover textarea {
+  width: 100%;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+  background: var(--color-bg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.selection-popover textarea:focus {
+  border-color: var(--color-primary);
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.selection-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.selection-apply {
+  margin-top: 0;
+}
+
+.selection-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.selection-error {
+  color: var(--color-danger) !important;
+}
+
+.reader-viewport--flow .slide-stage {
+  width: min(1080px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.flow-slide {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 32px 0;
+  border-bottom: 1px dashed transparent;
+  transition: border-color 0.3s;
+}
+
+.flow-slide--active {
+  border-bottom-color: var(--color-primary-border);
+}
+
+.flow-slide-label {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(139, 41, 66, 0.08);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.flow-slide:hover .flow-slide-label {
+  opacity: 1;
+}
+
+.flow-slide--active .flow-slide-label {
+  opacity: 1;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.slide-image-shell {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.flow-slide .slide-preview-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: var(--color-surface);
+  border: 1px solid #d8d1d4;
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+  animation: panel-in var(--motion-slow) var(--motion-ease) both;
+}
+
+.region-selection-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  cursor: crosshair;
+  touch-action: none;
+  background: rgba(139, 41, 66, 0.025);
+}
+
+.region-selection-box {
+  position: absolute;
+  border: 2px solid var(--color-primary);
+  background: rgba(139, 41, 66, 0.16);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7) inset;
+  pointer-events: none;
+}
+
+.flow-slide .slide-fallback {
+  width: min(960px, 100%);
+  min-height: 540px;
+  padding: clamp(32px, 5vw, 64px);
+  background: var(--color-surface);
+  border: 1px solid #d8d1d4;
+  border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+}
+
+.flow-slide .slide-fallback h2 {
+  margin: 0 0 var(--space-5);
+  font-size: clamp(28px, 4vw, 48px);
+  color: var(--color-text);
+}
+
+.flow-slide .slide-fallback p {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.8;
+  color: var(--color-text-soft);
 }
 
 .collapse-toggle {
@@ -2116,6 +2723,14 @@ onBeforeUnmount(() => {
 
   .page-chips {
     max-height: 88px;
+  }
+
+  /* 移动端禁用 hover 抽屉 */
+  .page-control-column--hover {
+    position: relative !important;
+    transform: none;
+    width: 100%;
+    box-shadow: none;
   }
 }
 </style>

@@ -26,6 +26,7 @@ def _to_user_dto(user: dict) -> UserDTO:
         id=int(user["id"]),
         username=str(user["username"]),
         is_admin=bool(user["is_admin"]),
+        is_active=bool(user.get("is_active", 1)),
         full_name=str(user.get("full_name", "") or ""),
         email=str(user.get("email", "") or ""),
         organization=str(user.get("organization", "") or ""),
@@ -72,6 +73,8 @@ async def login(req: LoginRequest) -> AuthResponse:
     user = get_user_by_username(username)
     if not user or not verify_password(password, str(user["password_hash"])):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if not bool(user.get("is_active", 1)):
+        raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
 
     token = create_token(int(user["id"]), str(user["username"]), bool(user["is_admin"]))
     return AuthResponse(token=token, user=_to_user_dto(user))

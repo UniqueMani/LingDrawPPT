@@ -1,10 +1,18 @@
 import type {
   AnalyzeResponse,
+  AdminAuditLogDTO,
+  AdminOverviewDTO,
+  AdminUserDTO,
   AuthResponse,
   ExtractTextResponse,
   IllustrationStrategyResponse,
+  OCRRegionRequest,
+  OCRRegionResponse,
+  PaginatedResponse,
   SlideRequest,
   UpdateMeResponse,
+  UploadedFileDTO,
+  UsageLogDTO,
   UserDTO,
   VizLabChartCodeResponse,
   VizLabIllustrationResponse,
@@ -100,6 +108,12 @@ export async function extractText(baseUrl: string, file: File) {
   return (await res.json()) as ExtractTextResponse;
 }
 
+export async function ocrRegion(baseUrl: string, payload: OCRRegionRequest) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<OCRRegionResponse>(`${b}/api/ocr-region`, payload);
+}
+
 export async function register(
   baseUrl: string,
   payload: {
@@ -162,15 +176,134 @@ export async function updateMe(
 }
 
 export async function adminUsers(baseUrl: string) {
+  return await adminListUsers(baseUrl);
+}
+
+function adminQuery(params: Record<string, string | number | boolean | undefined | null>) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  });
+  return query.toString();
+}
+
+async function adminFetch<T>(baseUrl: string, path: string, init?: RequestInit) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
-  const res = await fetch(`${b}/api/admin/users`, {
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const res = await fetch(`${b}${path}`, {
+    ...init,
+    headers,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as T;
+}
+
+export async function adminOverview(baseUrl: string) {
+  return await adminFetch<AdminOverviewDTO>(baseUrl, "/api/admin/overview");
+}
+
+export async function adminListUsers(baseUrl: string, params: Record<string, string | number | boolean | undefined> = {}) {
+  return await adminFetch<PaginatedResponse<AdminUserDTO>>(baseUrl, `/api/admin/users?${adminQuery(params)}`);
+}
+
+export async function adminUpdateUser(baseUrl: string, userId: number, payload: { full_name?: string; email?: string; organization?: string }) {
+  return await adminFetch<AdminUserDTO>(baseUrl, `/api/admin/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function adminSetUserStatus(baseUrl: string, userId: number, isActive: boolean) {
+  return await adminFetch<AdminUserDTO>(baseUrl, `/api/admin/users/${userId}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_active: isActive }),
+  });
+}
+
+export async function adminResetPassword(baseUrl: string, userId: number, password: string) {
+  return await adminFetch<{ ok: boolean }>(baseUrl, `/api/admin/users/${userId}/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export async function adminListFiles(baseUrl: string, params: Record<string, string | number | boolean | undefined> = {}) {
+  return await adminFetch<PaginatedResponse<UploadedFileDTO>>(baseUrl, `/api/admin/files?${adminQuery(params)}`);
+}
+
+export function adminFileDownloadUrl(baseUrl: string, fileId: number) {
+  return `${normalizeBaseUrl(baseUrl)}/api/admin/files/${fileId}/download`;
+}
+
+export async function adminDownloadFile(baseUrl: string, fileId: number, filename: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  const res = await fetch(`${b}/api/admin/files/${fileId}/download`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function adminDeleteFile(baseUrl: string, fileId: number) {
+  return await adminFetch<{ ok: boolean }>(baseUrl, `/api/admin/files/${fileId}`, { method: "DELETE" });
+}
+
+export async function adminListLogs(baseUrl: string, params: Record<string, string | number | undefined> = {}) {
+  return await adminFetch<PaginatedResponse<UsageLogDTO>>(baseUrl, `/api/admin/logs?${adminQuery(params)}`);
+}
+
+export async function adminExportLogs(baseUrl: string, params: Record<string, string | number | undefined> = {}) {
+  const b = normalizeBaseUrl(baseUrl);
+  const res = await fetch(`${b}/api/admin/logs/export?${adminQuery(params)}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "usage-logs.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function adminClearLogs(baseUrl: string, before: string) {
+  return await adminFetch<{ ok: boolean; deleted: number }>(baseUrl, `/api/admin/logs?${adminQuery({ before })}`, { method: "DELETE" });
+}
+
+export async function adminListAuditLogs(baseUrl: string, params: Record<string, string | number | undefined> = {}) {
+  return await adminFetch<PaginatedResponse<AdminAuditLogDTO>>(baseUrl, `/api/admin/audit-logs?${adminQuery(params)}`);
+}
+
+export async function getStats(baseUrl: string, days = 30) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const res = await fetch(`${b}/api/stats?days=${days}`, {
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
   });
   if (!res.ok) {
     const t = await res.text();
     throw new Error(`HTTP ${res.status}: ${t}`);
   }
-  return (await res.json()) as UserDTO[];
+  return (await res.json()) as { events: Record<string, number>; detail: { name: string; label: string; count: number }[] };
+}
+
+export async function postStatsEvent(baseUrl: string, eventType: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<{ ok: boolean }>(`${b}/api/stats/event`, { event_type: eventType });
 }
 

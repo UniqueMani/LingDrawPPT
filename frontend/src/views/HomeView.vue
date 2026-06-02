@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { store } from '../store';
-import { login, register, setAuthToken } from '../api/client';
+import { login, register, setAuthToken, getStats } from '../api/client';
 import ChartPreview from '../components/ChartPreview.vue';
 
 const authTab = ref<'login' | 'register'>('login');
+const router = useRouter();
 const authName = ref("");
 const authPwd = ref("");
-const regFullName = ref("");
-const regEmail = ref("");
-const regOrg = ref("");
 const regConfirmPwd = ref("");
 const authLoading = ref(false);
 const authMessage = ref("");
+
+function switchTab(tab: 'login' | 'register') {
+  authTab.value = tab;
+  authMessage.value = "";
+}
 
 async function doAuth() {
   authLoading.value = true;
@@ -26,14 +30,16 @@ async function doAuth() {
       : await register(store.baseUrl, {
           username: authName.value,
           password: authPwd.value,
-          full_name: regFullName.value,
-          email: regEmail.value,
-          organization: regOrg.value,
+          full_name: authName.value,
+          email: `${authName.value}@example.com`,
+          organization: '个人',
         });
     store.setToken(resp.token);
     store.currentUser = resp.user;
     setAuthToken(resp.token);
     store.addLog(`用户 ${resp.user.username} 登录成功`);
+    await loadStats();
+    if (resp.user.is_admin) router.push('/admin');
   } catch (e: any) {
     authMessage.value = e?.message || String(e);
   } finally {
@@ -41,15 +47,43 @@ async function doAuth() {
   }
 }
 
-// 首页图表数据（用于总览展示）
-const usageTrendOption = {
-  tooltip: { trigger: 'axis' },
-  grid: { left: 24, right: 16, top: 24, bottom: 24 },
-  xAxis: { type: 'category', data: ['上传', '解析', '生成', '采用'], axisLine: { lineStyle: { color: '#d9cdd1' } } },
-  yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0e8eb' } } },
-  color: ['#8b2942'],
-  series: [{ type: 'line', smooth: true, data: [10, 25, 18, 12], areaStyle: { color: 'rgba(139, 41, 66, 0.08)' } }],
+// 加载统计数据
+const statsLoading = ref(false);
+async function loadStats() {
+  if (!store.token) return;
+  statsLoading.value = true;
+  try {
+    const data = await getStats(store.baseUrl, 30);
+    store.usageStats = data.events;
+  } catch {
+    // 静默失败，使用默认空数据
+  } finally {
+    statsLoading.value = false;
+  }
+}
+
+// 首页图表数据（使用真实统计数据）
+const EVENT_ORDER = ['upload', 'analyze', 'generate', 'adopt'];
+const EVENT_LABELS: Record<string, string> = {
+  upload: '上传', analyze: '解析', generate: '生成', adopt: '采用',
 };
+
+const usageTrendOption = computed(() => {
+  const stats = store.usageStats || {};
+  const data = EVENT_ORDER.map(k => stats[k] || 0);
+  return {
+    tooltip: { trigger: 'axis' as const },
+    grid: { left: 24, right: 16, top: 24, bottom: 24 },
+    xAxis: { type: 'category' as const, data: EVENT_ORDER.map(k => EVENT_LABELS[k]), axisLine: { lineStyle: { color: '#d9cdd1' } } },
+    yAxis: { type: 'value' as const, splitLine: { lineStyle: { color: '#f0e8eb' } } },
+    color: ['#8b2942'],
+    series: [{ type: 'line' as const, smooth: true, data, areaStyle: { color: 'rgba(139, 41, 66, 0.08)' } }],
+  };
+});
+
+onMounted(() => {
+  if (store.token) loadStats();
+});
 </script>
 
 <template>
@@ -71,16 +105,11 @@ const usageTrendOption = {
         <h2>{{ authTab === 'login' ? '欢迎回来' : '创建账号' }}</h2>
         <p>{{ authTab === 'login' ? '继续处理你的演示文稿内容。' : '填写基本信息后进入工作台。' }}</p>
         <div class="auth-tabs">
-          <button :class="{ active: authTab === 'login' }" @click="authTab = 'login'">登录</button>
-          <button :class="{ active: authTab === 'register' }" @click="authTab = 'register'">注册</button>
+          <button :class="{ active: authTab === 'login' }" @click="switchTab('login')">登录</button>
+          <button :class="{ active: authTab === 'register' }" @click="switchTab('register')">注册</button>
         </div>
         <div class="auth-form">
           <input v-model="authName" placeholder="用户名" class="input auth-field" />
-          <TransitionGroup name="auth-fields">
-            <input v-if="authTab === 'register'" key="fullName" v-model="regFullName" placeholder="姓名" class="input auth-field" />
-            <input v-if="authTab === 'register'" key="email" v-model="regEmail" type="email" placeholder="邮箱" class="input auth-field" />
-            <input v-if="authTab === 'register'" key="org" v-model="regOrg" placeholder="机构/团队" class="input auth-field" />
-          </TransitionGroup>
           <input v-model="authPwd" type="password" placeholder="密码" class="input auth-field" />
           <Transition name="auth-fields">
             <input

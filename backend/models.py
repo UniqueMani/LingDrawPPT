@@ -59,6 +59,19 @@ class ExtractTextResponse(BaseModel):
     pages_detail: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class OCRRegionRequest(BaseModel):
+    preview_url: str
+    x: float = Field(..., ge=0, le=1)
+    y: float = Field(..., ge=0, le=1)
+    width: float = Field(..., gt=0, le=1)
+    height: float = Field(..., gt=0, le=1)
+
+
+class OCRRegionResponse(BaseModel):
+    text: str = ""
+    source: str = "ocr"
+
+
 class RegisterRequest(BaseModel):
     username: str
     password: str
@@ -85,6 +98,7 @@ class UserDTO(BaseModel):
     id: int
     username: str
     is_admin: bool
+    is_active: bool = True
     full_name: str = ""
     email: str = ""
     organization: str = ""
@@ -99,6 +113,84 @@ class AuthResponse(BaseModel):
 class UpdateMeResponse(BaseModel):
     user: UserDTO
     token: Optional[str] = None
+
+
+class UsageStatsResponse(BaseModel):
+    events: Dict[str, int] = Field(default_factory=dict)
+    detail: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class RecordEventRequest(BaseModel):
+    event_type: str = Field(..., description="事件类型：upload / analyze / generate / adopt")
+
+
+class AdminUserUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    organization: Optional[str] = None
+
+
+class AdminUserStatusRequest(BaseModel):
+    is_active: bool
+
+
+class AdminResetPasswordRequest(BaseModel):
+    password: str
+
+
+class AdminUserDTO(UserDTO):
+    disabled_at: Optional[str] = None
+
+
+class UploadedFileDTO(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    original_filename: str
+    mime_type: str = ""
+    file_size: int = 0
+    pages: int = 0
+    parse_status: str
+    error_message: str = ""
+    created_at: str
+    deleted_at: Optional[str] = None
+
+
+class UsageLogDTO(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    event_type: str
+    created_at: str
+
+
+class AdminAuditLogDTO(BaseModel):
+    id: int
+    admin_user_id: int
+    admin_username: str
+    action_type: str
+    target_type: str
+    target_id: str
+    detail: str = ""
+    created_at: str
+
+
+class AdminOverviewDTO(BaseModel):
+    total_users: int = 0
+    active_users: int = 0
+    total_files: int = 0
+    failed_files: int = 0
+    recent_events: int = 0
+    event_counts: Dict[str, int] = Field(default_factory=dict)
+    recent_failed_files: List[UploadedFileDTO] = Field(default_factory=list)
+    recent_audit_logs: List[AdminAuditLogDTO] = Field(default_factory=list)
+
+
+class PaginatedResponse(BaseModel):
+    items: List[Any] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
 
 
 class ChartCodeValidationIssue(BaseModel):

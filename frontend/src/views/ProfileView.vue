@@ -26,6 +26,13 @@ const savingPwd = ref(false);
 const pwdMsg = ref("");
 const pwdMsgType = ref<"ok" | "err">("ok");
 
+/** 成功消息 3s 后自动清空 */
+function autoHide(msgRef: typeof infoMsg, delay = 3000) {
+  setTimeout(() => {
+    msgRef.value = "";
+  }, delay);
+}
+
 function syncFromStore() {
   email.value = store.currentUser?.email ?? "";
 }
@@ -70,6 +77,7 @@ async function saveInfo() {
     editingInfo.value = false;
     infoMsgType.value = "ok";
     infoMsg.value = "保存成功";
+    autoHide(infoMsg);
     store.addLog("个人信息已更新");
   } catch (e: any) {
     infoMsgType.value = "err";
@@ -106,6 +114,7 @@ async function saveUsername() {
     editingUsername.value = false;
     usernameMsgType.value = "ok";
     usernameMsg.value = "用户名修改成功";
+    autoHide(usernameMsg);
     store.addLog("用户名已更新");
   } catch (e: any) {
     usernameMsgType.value = "err";
@@ -155,6 +164,7 @@ async function savePwd() {
     editingPwd.value = false;
     pwdMsgType.value = "ok";
     pwdMsg.value = "密码修改成功";
+    autoHide(pwdMsg);
     store.addLog("密码已更新");
   } catch (e: any) {
     pwdMsgType.value = "err";

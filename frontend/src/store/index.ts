@@ -9,6 +9,7 @@ const base = reactive({
   currentIndex: 0,
   docName: "",
   activityLogs: ["欢迎进入 LingDraw PPT Studio"],
+  usageStats: {} as Record<string, number>,
 
   setToken(token: string) {
     base.token = token;

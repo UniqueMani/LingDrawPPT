@@ -14,6 +14,8 @@ def require_user(authorization: str | None = Header(default=None)) -> dict:
     user = get_user_by_id(uid)
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
+    if not bool(user.get("is_active", 1)):
+        raise HTTPException(status_code=403, detail="账号已被禁用")
     return user
 
 
