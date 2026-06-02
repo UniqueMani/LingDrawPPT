@@ -57,11 +57,28 @@ export interface OCRRegionResponse {
 }
 
 export interface ExtractTextResponse {
+  file_id: number;
   filename: string;
   text: string;
   title: string;
   pages: number;
   pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
+}
+
+export interface FileRecordDTO {
+  id: number;
+  original_filename: string;
+  file_size: number;
+  pages: number;
+  parse_status: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FileDetailDTO extends FileRecordDTO {
+  pages_detail: ExtractTextResponse["pages_detail"];
+  extracted_text: string;
 }
 
 export interface UserDTO {

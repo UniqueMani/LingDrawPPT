@@ -28,6 +28,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: "/files",
+    name: "Files",
+    component: () => import("../views/FilesView.vue"),
+    meta: { requiresAuth: true },
+  },
+  {
     path: "/admin",
     name: "Admin",
     component: () => import("../views/AdminView.vue"),
@@ -45,7 +51,7 @@ router.beforeEach((to, _from, next) => {
     next("/home");
   } else if (to.meta.requiresAdmin && store.currentUser && !store.currentUser.is_admin) {
     next("/home");
-  } else if (store.currentUser?.is_admin && (to.path === "/home" || to.path === "/workspace")) {
+  } else if (store.currentUser?.is_admin && ["/home", "/workspace", "/files"].includes(to.path)) {
     next("/admin");
   } else {
     next();

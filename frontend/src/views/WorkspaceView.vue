@@ -72,6 +72,7 @@ async function onPickFile(event: Event) {
   try {
     const resp = await extractText(store.baseUrl, file);
     store.docName = resp.filename;
+    store.currentFileId = resp.file_id;
     store.slides = [];
 
     const pages =
@@ -121,7 +122,8 @@ function resetDocument() {
   if (!window.confirm("确定要更换文件吗？当前所有已生成结果将被清除，此操作不可撤销。")) return;
   store.slides = [];
   store.currentIndex = 0;
-  store.docName = "";
+    store.docName = "";
+    store.currentFileId = 0;
   functionMode.value = "preview";
   activeWorkflowStep.value = "intent";
   zoomIdx.value = 2;
@@ -325,13 +327,13 @@ function onPreviewKeydown(e: KeyboardEvent) {
 
 function slideStatusShort(sl: (typeof store.slides)[0]) {
   const c =
-    sl.statusAnalyze === "success" ? "图表✓" : sl.statusAnalyze === "loading" ? "图表…" : "图表—";
+    sl.statusAnalyze === "success" ? "图表已生成" : sl.statusAnalyze === "loading" ? "图表生成中" : "图表未生成";
   const i =
     sl.statusIllustration === "success"
-      ? "配图✓"
+      ? "配图已生成"
       : sl.statusIllustration === "loading"
-        ? "配图…"
-        : "配图—";
+        ? "配图生成中"
+        : "配图未生成";
   return `${c} · ${i}`;
 }
 
@@ -772,7 +774,6 @@ onBeforeUnmount(() => {
 
         <div class="drop-zone" @click="triggerFilePick">
           <div v-if="!uploadLoading" class="hint">
-            <span class="icon">📁</span>
             <span>点击选择文件</span>
           </div>
           <div v-else class="loader">
@@ -1249,10 +1250,6 @@ onBeforeUnmount(() => {
   gap: 10px;
   font-weight: 600;
   color: var(--color-text-soft);
-}
-
-.icon {
-  font-size: 48px;
 }
 
 .loader {

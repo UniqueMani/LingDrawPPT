@@ -38,8 +38,12 @@ async function doAuth() {
     store.currentUser = resp.user;
     setAuthToken(resp.token);
     store.addLog(`用户 ${resp.user.username} 登录成功`);
-    await loadStats();
-    if (resp.user.is_admin) router.push('/admin');
+    if (resp.user.is_admin) {
+      await router.replace('/admin');
+    } else {
+      await loadStats();
+      await store.fetchFiles();
+    }
   } catch (e: any) {
     authMessage.value = e?.message || String(e);
   } finally {
@@ -129,13 +133,16 @@ onMounted(() => {
     </section>
 
     <!-- 已登录状态：显示总览看板 -->
-    <section v-else class="dashboard-section">
+    <section v-else-if="store.currentUser && !store.currentUser.is_admin" class="dashboard-section">
       <div class="dashboard-head">
         <div>
           <span class="eyebrow">总览</span>
           <h1>项目状态</h1>
         </div>
-        <router-link to="/workspace" class="btn primary">进入工作台</router-link>
+        <div class="dashboard-actions">
+          <router-link to="/files" class="btn secondary">我的文件</router-link>
+          <router-link to="/workspace" class="btn primary">进入工作台</router-link>
+        </div>
       </div>
 
       <div class="dashboard-grid">
@@ -158,6 +165,8 @@ onMounted(() => {
         <ChartPreview :option="usageTrendOption" :height="300" />
       </div>
     </section>
+
+    <section v-else class="home-loading" aria-live="polite">正在进入管理后台...</section>
   </div>
 </template>
 
@@ -190,7 +199,9 @@ onMounted(() => {
 .primary:hover:not(:disabled) { background: var(--color-primary-hover); transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
 .secondary { background: var(--color-surface); border-color: var(--color-primary); color: var(--color-primary); }
 .dashboard-section { max-width: var(--panel-max-width); width: 100%; margin: 0 auto; animation: panel-in var(--motion-slow) var(--motion-ease) both; }
+.home-loading { display: flex; min-height: calc(100vh - 118px); align-items: center; justify-content: center; color: var(--color-muted); font-size: 14px; }
 .dashboard-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
+.dashboard-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .dashboard-head h1 { margin: 10px 0 0; font-size: 28px; line-height: 1.2; color: var(--color-text); }
 .dashboard-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
 .stat-card { background: var(--color-surface); padding: var(--space-5); min-height: 112px; border-radius: var(--radius-card); border: 1px solid var(--color-border); box-shadow: var(--shadow-card); animation: panel-in var(--motion-slow) var(--motion-ease) both; }

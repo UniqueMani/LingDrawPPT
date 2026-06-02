@@ -5,6 +5,8 @@ import type {
   AdminUserDTO,
   AuthResponse,
   ExtractTextResponse,
+  FileDetailDTO,
+  FileRecordDTO,
   IllustrationStrategyResponse,
   OCRRegionRequest,
   OCRRegionResponse,
@@ -106,6 +108,32 @@ export async function extractText(baseUrl: string, file: File) {
     throw new Error(`HTTP ${res.status}: ${t}`);
   }
   return (await res.json()) as ExtractTextResponse;
+}
+
+export async function listFiles(baseUrl: string) {
+  return await adminFetch<FileRecordDTO[]>(baseUrl, "/api/files");
+}
+
+export async function getFileDetail(baseUrl: string, fileId: number) {
+  return await adminFetch<FileDetailDTO>(baseUrl, `/api/files/${fileId}`);
+}
+
+export async function deleteFile(baseUrl: string, fileId: number) {
+  return await adminFetch<{ ok: boolean }>(baseUrl, `/api/files/${fileId}`, { method: "DELETE" });
+}
+
+export async function downloadFile(baseUrl: string, fileId: number, filename: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  const res = await fetch(`${b}/api/files/${fileId}/download`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 export async function ocrRegion(baseUrl: string, payload: OCRRegionRequest) {

@@ -52,6 +52,7 @@ class IllustrationStrategyResponse(BaseModel):
 
 
 class ExtractTextResponse(BaseModel):
+    file_id: int = 0
     filename: str
     text: str
     title: str = ""
@@ -154,6 +155,22 @@ class UploadedFileDTO(BaseModel):
     error_message: str = ""
     created_at: str
     deleted_at: Optional[str] = None
+
+
+class FileRecordDTO(BaseModel):
+    id: int
+    original_filename: str
+    file_size: int = 0
+    pages: int = 0
+    parse_status: str
+    error_message: str = ""
+    created_at: str
+    updated_at: str
+
+
+class FileDetailDTO(FileRecordDTO):
+    pages_detail: List[Dict[str, Any]] = Field(default_factory=list)
+    extracted_text: str = ""
 
 
 class UsageLogDTO(BaseModel):
