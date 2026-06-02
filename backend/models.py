@@ -57,24 +57,6 @@ class ExtractTextResponse(BaseModel):
     title: str = ""
     pages: int = 0
     pages_detail: List[Dict[str, Any]] = Field(default_factory=list)
-    file_id: int = 0
-
-
-class FileRecordDTO(BaseModel):
-    id: int
-    filename: str
-    original_filename: str
-    file_size: int = 0
-    pages: int = 0
-    parse_status: str = "pending"
-    parse_error: str = ""
-    created_at: str
-    updated_at: str
-
-
-class FileDetailDTO(FileRecordDTO):
-    pages_data: list = Field(default_factory=list)
-    extracted_text: str = ""
 
 
 class RegisterRequest(BaseModel):
@@ -90,15 +72,6 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class UpdateMeRequest(BaseModel):
-    username: Optional[str] = None
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    organization: Optional[str] = None
-    old_password: Optional[str] = None
-    new_password: Optional[str] = None
-
-
 class UserDTO(BaseModel):
     id: int
     username: str
@@ -112,20 +85,6 @@ class UserDTO(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     user: UserDTO
-
-
-class UpdateMeResponse(BaseModel):
-    user: UserDTO
-    token: Optional[str] = None
-
-
-class UsageStatsResponse(BaseModel):
-    events: Dict[str, int] = Field(default_factory=dict)
-    detail: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class RecordEventRequest(BaseModel):
-    event_type: str = Field(..., description="事件类型：upload / analyze / generate / adopt")
 
 
 class ChartCodeValidationIssue(BaseModel):
@@ -147,11 +106,7 @@ class VizLabChartCodeResponse(BaseModel):
     chartJsConfig: Optional[Dict[str, Any]] = None
     mermaidSource: Optional[str] = None
     validationIssues: List[ChartCodeValidationIssue] = Field(default_factory=list)
-    generatedTargets: List[str] = Field(default_factory=list)
     source: str = "fallback"
-    llmAttempted: bool = False
-    llmSucceeded: bool = False
-    fallbackReason: str = ""
     rawLlmExcerpt: Optional[str] = None
 
 

@@ -48,12 +48,12 @@ const slide = defineModel<SlideRequest>({ required: true });
 .sif {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 14px;
 }
 .f {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 6px;
 }
 .f.tight {
   flex: 1;
@@ -61,30 +61,19 @@ const slide = defineModel<SlideRequest>({ required: true });
 label {
   font-size: 12px;
   font-weight: 700;
-  color: var(--color-muted);
+  color: #475569;
 }
 .inp,
 .ta,
 .sel {
-  border: 1px solid var(--color-primary-border);
-  border-radius: var(--radius-control);
-  min-height: var(--control-lg);
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
   font-family: inherit;
-  color: var(--color-text);
-  background: var(--color-surface);
-  outline: none;
-}
-.inp:focus,
-.ta:focus,
-.sel:focus {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-  transform: translateY(-1px);
 }
 .ta.dim {
-  background: var(--color-primary-soft);
+  background: #fcfdfc;
 }
 .sel {
   cursor: pointer;
@@ -92,7 +81,7 @@ label {
 }
 .row2 {
   display: flex;
-  gap: var(--space-4);
+  gap: 16px;
   flex-wrap: wrap;
 }
 </style>

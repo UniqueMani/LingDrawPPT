@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.db import record_event
 from backend.deps import require_user
 from backend.models import AnalyzeResponse, ChartResponse, SlideRequest
 from backend.services.chart_context import merge_slide_context
@@ -37,7 +36,6 @@ async def analyze(req: SlideRequest, _: dict = Depends(require_user)) -> Analyze
             extracted=extracted,
         )
 
-        record_event(int(_["id"]), "analyze")
         return AnalyzeResponse(semantic=sem, chart=chart)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"analyze failed: {e}")

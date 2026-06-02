@@ -83,46 +83,45 @@ function illusBadge(s: SlideState) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
+  gap: 10px;
+  margin-bottom: 12px;
 }
 .title {
   font-size: 14px;
   font-weight: 700;
-  color: var(--color-text);
+  color: #111827;
 }
 .subtitle {
   font-size: 12px;
-  color: var(--color-muted);
+  color: #6b7280;
 }
 .list {
   overflow: auto;
   padding-right: 4px;
 }
 .item {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 10px;
   cursor: pointer;
-  background: var(--color-surface);
-  transition: transform var(--motion-base) var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease), border-color var(--motion-base) var(--motion-ease);
-  animation: panel-in var(--motion-slow) var(--motion-ease) both;
+  background: linear-gradient(180deg, #ffffff 0%, #fcfdff 100%);
+  transition: all 0.16s ease;
 }
 .item:hover {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-card);
+  border-color: #c7d2fe;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.05);
   transform: translateY(-1px);
 }
 .item.active {
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(139, 41, 66, 0.12);
+  border-color: #1f9d60;
+  box-shadow: 0 0 0 3px rgba(31, 157, 96, 0.14);
 }
 .itemTitle {
   font-weight: 600;
   font-size: 14px;
   margin-bottom: 6px;
-  color: var(--color-text);
+  color: #111827;
 }
 .badges {
   display: flex;
@@ -134,13 +133,12 @@ function illusBadge(s: SlideState) {
   font-size: 12px;
   padding: 4px 8px;
   border-radius: 999px;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-  border: 1px solid var(--color-border);
+  background: #eaf9f0;
+  color: #0f5132;
 }
 .pill.muted {
-  background: var(--color-bg-muted);
-  color: var(--color-muted);
+  background: #f3f4f6;
+  color: #6b7280;
 }
 .actions {
   display: flex;
@@ -148,37 +146,25 @@ function illusBadge(s: SlideState) {
   margin-top: 10px;
 }
 .btn {
-  border: 1px solid var(--color-primary);
-  background: var(--color-primary);
+  border: 1px solid #1f9d60;
+  background: #1f9d60;
   color: #fff;
-  border-radius: var(--radius-control);
-  min-height: var(--control-md);
-  padding: 0 12px;
+  border-radius: 10px;
+  padding: 8px 12px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
 }
-.btn:hover {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
-  transform: translateY(-1px);
-}
 .mini {
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  border-radius: var(--radius-control);
-  min-height: var(--control-sm);
-  padding: 0 10px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 8px;
   font-size: 12px;
   cursor: pointer;
-  color: var(--color-text-soft);
-}
-.mini:hover:not(:disabled) {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
 }
 .mini.danger {
-  color: var(--color-danger);
+  color: #b91c1c;
   border-color: #fca5a5;
 }
 .mini:disabled {

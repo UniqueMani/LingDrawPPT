@@ -6,12 +6,12 @@ import type { EChartsOption } from "../types";
 const props = withDefaults(
   defineProps<{
     option?: EChartsOption | null;
-    width?: number | string;
-    height?: number | string;
+    width?: number;
+    height?: number;
     backgroundColor?: string;
   }>(),
   {
-    width: "100%",
+    width: 900,
     height: 420,
     backgroundColor: "#ffffff",
   }
@@ -19,10 +19,9 @@ const props = withDefaults(
 
 const elRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
-let resizeObserver: ResizeObserver | null = null;
 
-const styleWidth = computed(() => (typeof props.width === "number" ? `${props.width}px` : props.width));
-const styleHeight = computed(() => (typeof props.height === "number" ? `${props.height}px` : props.height));
+const styleWidth = computed(() => `${props.width}px`);
+const styleHeight = computed(() => `${props.height}px`);
 
 function ensureChart() {
   if (!elRef.value) return null;
@@ -43,37 +42,20 @@ function render() {
     return;
   }
 
-  c.resize();
   c.setOption(opt, true);
-}
-
-function resizeChart() {
-  if (!chart) return;
-  chart.resize();
 }
 
 onMounted(() => {
   render();
-  if (elRef.value && typeof ResizeObserver !== "undefined") {
-    resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        resizeChart();
-        render();
-      });
-    });
-    resizeObserver.observe(elRef.value);
-  }
-  window.addEventListener("resize", resizeChart);
+  window.addEventListener("resize", render);
 });
 
 onBeforeUnmount(() => {
   try {
-    window.removeEventListener("resize", resizeChart);
+    window.removeEventListener("resize", render);
   } catch {
     // ignore
   }
-  resizeObserver?.disconnect();
-  resizeObserver = null;
   if (chart) {
     chart.dispose();
     chart = null;

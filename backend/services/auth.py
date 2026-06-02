@@ -107,43 +107,6 @@ def create_user(
     return get_user_by_id(int(user_id)) or {}
 
 
-def update_user(
-    user_id: int,
-    *,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-    full_name: Optional[str] = None,
-    email: Optional[str] = None,
-    organization: Optional[str] = None,
-) -> Dict[str, Any]:
-    assignments: list[str] = []
-    values: list[Any] = []
-    if username is not None:
-        assignments.append("username = ?")
-        values.append(username)
-    if password is not None:
-        assignments.append("password_hash = ?")
-        values.append(hash_password(password))
-    if full_name is not None:
-        assignments.append("full_name = ?")
-        values.append(full_name)
-    if email is not None:
-        assignments.append("email = ?")
-        values.append(email)
-    if organization is not None:
-        assignments.append("organization = ?")
-        values.append(organization)
-    if assignments:
-        values.append(user_id)
-        with get_conn() as conn:
-            conn.execute(
-                f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
-                values,
-            )
-            conn.commit()
-    return get_user_by_id(user_id) or {}
-
-
 def list_users() -> list[Dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(

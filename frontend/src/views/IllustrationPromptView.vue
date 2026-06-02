@@ -1,25 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { ref } from "vue";
 import { store } from "../store";
 import { vizLabIllustration } from "../api/client";
-import SlideInputForm from "./SlideInputForm.vue";
+import SlideInputForm from "../components/SlideInputForm.vue";
 import type { SlideRequest, VizLabIllustrationResponse } from "../types";
 
-type DisplayIllustrationResult = {
-  needIllus: boolean;
-  keywords: string[];
-  prompt: string;
-  reason: string;
-  experiment?: Record<string, any> | null;
-};
-
-const slide = defineModel<SlideRequest>("slide", { required: true });
-const props = defineProps<{
-  initialResult?: DisplayIllustrationResult | null;
-}>();
-const emit = defineEmits<{
-  result: [result: VizLabIllustrationResponse];
-}>();
+const slide = ref<SlideRequest>({
+  topic: "",
+  body: "",
+  data_description: "",
+  slide_type: "content",
+  mode: "auto",
+});
 
 const imageModel = ref<"flux" | "sd" | "other">("flux");
 const styleRefUrl = ref("");
@@ -29,7 +21,6 @@ const extraStyleWords = ref("");
 const loading = ref(false);
 const err = ref("");
 const result = ref<VizLabIllustrationResponse | null>(null);
-const displayResult = computed<DisplayIllustrationResult | null>(() => result.value || props.initialResult || null);
 
 async function run() {
   loading.value = true;
@@ -43,7 +34,6 @@ async function run() {
       lora_hint: loraHint.value.trim() || null,
       extra_style_words: extraStyleWords.value.trim() || null,
     });
-    emit("result", result.value);
   } catch (e: any) {
     err.value = e?.message || String(e);
   } finally {
@@ -53,7 +43,15 @@ async function run() {
 </script>
 
 <template>
-  <div class="panel-root">
+  <div class="page">
+    <header class="hero">
+      <h1>语义配图与文生图 Prompt</h1>
+      <p class="lead">
+        根据页面主题与正文摘要生成<strong>关键词</strong>与<strong>文生图 Prompt</strong>，并记录目标模型（FLUX / SD）、风格参考图
+        URL、LoRA 提示等实验字段，便于你对接真实出图 API、IP-Adapter 与风格一致性实验。本页<strong>不生成数据图表</strong>。
+      </p>
+    </header>
+
     <div class="panel">
       <h2>页面内容</h2>
       <SlideInputForm v-model="slide" />
@@ -89,47 +87,71 @@ async function run() {
       <p v-if="err" class="err">{{ err }}</p>
     </div>
 
-    <div v-if="displayResult" class="panel out">
-      <div class="pill">{{ displayResult.needIllus ? "建议配图" : "不强依赖配图" }}</div>
+    <div v-if="result" class="panel out">
+      <div class="pill">{{ result.needIllus ? "建议配图" : "不强依赖配图" }}</div>
       <h3>关键词</h3>
       <div class="tags">
-        <span v-for="k in displayResult.keywords" :key="k" class="tag">{{ k }}</span>
+        <span v-for="k in result.keywords" :key="k" class="tag">{{ k }}</span>
       </div>
       <h3>文生图 Prompt</h3>
-      <div class="prompt">{{ displayResult.prompt }}</div>
-      <p class="reason">{{ displayResult.reason }}</p>
-      <details v-if="displayResult.experiment" open>
+      <div class="prompt">{{ result.prompt }}</div>
+      <p class="reason">{{ result.reason }}</p>
+      <details open>
         <summary>experiment 元数据</summary>
-        <pre class="pre">{{ JSON.stringify(displayResult.experiment, null, 2) }}</pre>
+        <pre class="pre">{{ JSON.stringify(result.experiment, null, 2) }}</pre>
       </details>
       <div class="ph">
-        <p>待接入出图服务后展示最终图片。</p>
+        <span class="ico">🖼️</span>
+        <p>真实出图结果可在此占位展示：接入你的 FLUX/SD HTTP 接口后返回图片 URL 或 base64。</p>
       </div>
     </div>
+
+    <p class="foot">
+      若需先做数据图表，请使用顶部<strong>「图表意图」</strong>或<strong>「图表代码」</strong>；流水线整合可在<strong>工作台</strong>分按钮执行。
+    </p>
   </div>
 </template>
 
 <style scoped>
-.panel-root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+.hero {
+  margin-bottom: 24px;
+}
+.tag {
+  display: inline-block;
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #86198f;
+  background: #fae8ff;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.hero h1 {
+  margin: 0 0 12px;
+  font-size: 28px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.lead {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.65;
+  color: #475569;
 }
 .panel {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0 0 var(--space-6);
-  box-shadow: none;
-  border-bottom: 1px solid var(--color-border);
-  animation: panel-in var(--motion-slow) var(--motion-ease) both;
-  transition: transform var(--motion-base) var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease);
-}
-.panel:hover {
-  box-shadow: none;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 22px 24px;
+  margin-bottom: 18px;
 }
 .panel h2 {
-  margin: 0 0 var(--space-4);
+  margin: 0 0 16px;
   font-size: 16px;
   font-weight: 800;
 }
@@ -137,13 +159,13 @@ async function run() {
   margin: 18px 0 10px;
   font-size: 13px;
   font-weight: 800;
-  color: var(--color-muted);
+  color: #64748b;
 }
 .row2 {
   display: flex;
-  gap: var(--space-4);
+  gap: 16px;
   flex-wrap: wrap;
-  margin-bottom: var(--space-4);
+  margin-bottom: 14px;
 }
 .f {
   display: flex;
@@ -158,65 +180,45 @@ async function run() {
 label {
   font-size: 12px;
   font-weight: 700;
-  color: var(--color-muted);
+  color: #475569;
 }
 .inp,
 .sel,
 .ta {
-  border: 1px solid var(--color-primary-border);
-  border-radius: var(--radius-control);
-  min-height: var(--control-lg);
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
   font-family: inherit;
-}
-.inp:focus,
-.sel:focus,
-.ta:focus {
-  border-color: var(--color-primary);
-  outline: none;
-  box-shadow: var(--shadow-focus);
 }
 .sel {
   cursor: pointer;
   font-weight: 600;
 }
 .btn {
-  min-height: var(--control-lg);
-  margin-top: var(--space-4);
-  padding: 0 24px;
+  margin-top: 14px;
+  padding: 12px 24px;
   border: none;
-  border-radius: var(--radius-control);
-  background: var(--color-primary);
+  border-radius: 10px;
+  background: #7c3aed;
   color: #fff;
   font-weight: 800;
   cursor: pointer;
-  transition: background var(--motion-base), transform var(--motion-base), box-shadow var(--motion-base);
-}
-.btn:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-card);
 }
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .err {
-  color: var(--color-danger);
-  margin-top: var(--space-3);
-  background: var(--color-danger-soft);
-  border: 1px solid #fee2e2;
-  border-radius: var(--radius-control);
-  padding: var(--space-3);
+  color: #b91c1c;
+  margin-top: 10px;
 }
 .pill {
   display: inline-block;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-  border: 1px solid var(--color-primary-border);
+  background: #ede9fe;
+  color: #5b21b6;
   padding: 6px 12px;
-  border-radius: var(--radius-control);
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 800;
   margin-bottom: 8px;
@@ -227,28 +229,25 @@ label {
   gap: 8px;
 }
 .tag {
-  background: var(--color-bg-muted);
-  min-height: 28px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 10px;
-  border-radius: var(--radius-control);
+  background: #f1f5f9;
+  padding: 4px 10px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
 }
 .prompt {
-  background: var(--color-surface);
-  border: 1px solid var(--color-primary-border);
-  border-radius: var(--radius-card);
-  padding: var(--space-4);
+  background: #faf5ff;
+  border: 1px solid #e9d5ff;
+  border-radius: 12px;
+  padding: 14px;
   font-size: 14px;
   line-height: 1.6;
-  color: var(--color-text-soft);
+  color: #1e1b4b;
   white-space: pre-wrap;
 }
 .reason {
   font-size: 13px;
-  color: var(--color-muted);
+  color: #64748b;
   margin-top: 10px;
 }
 details summary {
@@ -258,21 +257,21 @@ details summary {
   font-size: 13px;
 }
 .pre {
-  background: #1f1720;
-  color: #f8eef1;
+  background: #0f172a;
+  color: #e2e8f0;
   padding: 12px;
-  border-radius: var(--radius-control);
+  border-radius: 10px;
   font-size: 12px;
   overflow: auto;
   max-height: 200px;
 }
 .ph {
   margin-top: 20px;
-  padding: var(--space-5);
-  border: 2px dashed var(--color-primary-border);
-  border-radius: var(--radius-card);
+  padding: 22px;
+  border: 2px dashed #e2e8f0;
+  border-radius: 12px;
   text-align: center;
-  color: var(--color-muted);
+  color: #64748b;
   font-size: 13px;
 }
 .ico {
@@ -282,7 +281,7 @@ details summary {
 }
 .foot {
   font-size: 13px;
-  color: var(--color-muted);
+  color: #64748b;
   line-height: 1.5;
   margin: 0;
 }

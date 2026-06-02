@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.db import record_event
 from backend.deps import require_user
 from backend.models import IllustrationResponse, IllustrationStrategyResponse, SlideRequest
 from backend.services.illus_strategy import generate_illustration_strategy
@@ -18,7 +17,6 @@ async def illustration(req: SlideRequest, _: dict = Depends(require_user)) -> Il
 
         illus = generate_illustration_strategy(req, intent=intent)
 
-        record_event(int(_["id"]), "generate")
         return IllustrationStrategyResponse(
             illustration=IllustrationResponse(**illus)
         )

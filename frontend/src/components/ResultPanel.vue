@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { SlideState } from "../types";
 import ChartPreview from "./ChartPreview.vue";
 
@@ -21,6 +21,16 @@ const tablePreview = computed(() => {
   const rows = ex.rows;
   if (!Array.isArray(columns) || !Array.isArray(rows)) return null;
   return { columns: columns as string[], rows: rows as unknown[][] };
+});
+
+const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1280);
+const handleResize = () => {
+  viewportWidth.value = window.innerWidth;
+};
+const chartWidth = computed(() => {
+  if (viewportWidth.value < 680) return Math.max(260, viewportWidth.value - 120);
+  if (viewportWidth.value < 1100) return Math.max(420, viewportWidth.value - 220);
+  return 920;
 });
 
 const keywordsText = computed({
@@ -57,6 +67,12 @@ function needIllusText() {
   return illus.value.needIllus ? "需要插图" : "不强需插图";
 }
 
+onMounted(() => {
+  window.addEventListener("resize", handleResize);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", handleResize);
+});
 </script>
 
 <template>
@@ -64,11 +80,7 @@ function needIllusText() {
     <div class="row">
       <div class="card left">
         <div class="cardTitle">语义识别</div>
-        <div v-if="slide.statusAnalyze === 'loading'" class="loading-state">
-          <div class="skeleton-text"></div>
-          <div class="skeleton-text short"></div>
-          <span>图表生成中…</span>
-        </div>
+        <div v-if="slide.statusAnalyze === 'loading'" class="muted">图表生成中…</div>
         <div v-if="slide.statusAnalyze === 'error'" class="error">{{ slide.errorAnalyze }}</div>
 
         <div v-if="slide.statusAnalyze === 'success'">
@@ -90,10 +102,7 @@ function needIllusText() {
 
       <div class="card right">
         <div class="cardTitle">图表预览</div>
-        <div v-if="slide.statusAnalyze === 'loading'" class="loading-chart">
-          <div class="spinner"></div>
-          <span>加载中…</span>
-        </div>
+        <div v-if="slide.statusAnalyze === 'loading'" class="muted">加载中…</div>
         <div v-else class="chartWrap">
           <div v-if="tablePreview" class="tableWrap">
             <table class="data-table">
@@ -109,7 +118,12 @@ function needIllusText() {
               </tbody>
             </table>
           </div>
-          <ChartPreview v-else :option="slide.analyze?.chart?.echartsOption" :height="420" />
+          <ChartPreview
+            v-else
+            :option="slide.analyze?.chart?.echartsOption"
+            :width="chartWidth"
+            :height="420"
+          />
         </div>
 
         <div class="btnRow">
@@ -132,11 +146,7 @@ function needIllusText() {
 
     <div class="card illusCard">
       <div class="cardTitle">插图策略</div>
-      <div v-if="slide.statusIllustration === 'loading'" class="loading-state">
-        <div class="skeleton-text"></div>
-        <div class="skeleton-text short"></div>
-        <span>插图策略生成中…</span>
-      </div>
+      <div v-if="slide.statusIllustration === 'loading'" class="muted">插图策略生成中…</div>
       <div v-if="slide.statusIllustration === 'error'" class="error">{{ slide.errorIllustration }}</div>
 
       <div v-if="slide.statusIllustration === 'success' && illus">
@@ -167,27 +177,20 @@ function needIllusText() {
 .result {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 14px;
 }
 .row {
   display: flex;
-  gap: var(--space-4);
+  gap: 14px;
   align-items: stretch;
   flex-wrap: wrap;
 }
 .card {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  padding: var(--space-4);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card);
-  animation: panel-in var(--motion-slow) var(--motion-ease) both;
-  transition: transform var(--motion-base) var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease), border-color var(--motion-base) var(--motion-ease);
-}
-.card:hover {
-  border-color: var(--color-primary-border);
-  box-shadow: var(--shadow-card-hover);
-  transform: translateY(-2px);
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 14px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
 }
 .left {
   flex: 1 1 320px;
@@ -198,156 +201,44 @@ function needIllusText() {
 }
 .illusCard {
   flex: 1 1 100%;
-  animation-delay: 80ms;
 }
-.cardTitle { font-weight: 800; margin-bottom: var(--space-4); color: var(--color-text); display: flex; align-items: center; gap: 8px; font-size: 15px; }
-.muted {
-  color: var(--color-muted);
-  font-size: 13px;
-}
-.error {
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border: 1px solid #fee2e2;
-  border-radius: var(--radius-control);
-  padding: var(--space-3);
-  font-size: 13px;
-}
-.pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 10px;
-  border-radius: var(--radius-control);
-  background: var(--color-primary-soft);
-  border: 1px solid var(--color-primary-border);
-  color: var(--color-primary);
-  font-size: 12px;
-  font-weight: 700;
-}
-.pill.muted {
-  background: var(--color-bg-muted);
-  border-color: var(--color-border);
-  color: var(--color-muted);
-}
-.reason {
-  background: var(--color-primary-soft);
-  border-left: 4px solid var(--color-primary);
-  border-radius: var(--radius-control);
-  padding: var(--space-3);
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--color-text-soft);
-}
-.details summary {
-  cursor: pointer;
-  color: var(--color-muted);
-  font-size: 12px;
-  font-weight: 700;
-  margin-top: 12px;
-}
-.pre {
-  background: #1f1720;
-  color: #f8eef1;
-  border-radius: var(--radius-control);
-  padding: var(--space-3);
-  font-size: 12px;
-  overflow: auto;
-}
-.btnRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-.btn {
-  min-height: var(--control-md);
-  padding: 0 12px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--color-primary);
-  background: var(--color-primary);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background var(--motion-base), border-color var(--motion-base), color var(--motion-base), transform var(--motion-base), box-shadow var(--motion-base);
-}
-.btn.secondary {
-  background: var(--color-surface);
-  color: var(--color-primary);
-}
-.btn:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
-  color: #fff;
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-card);
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.cardTitle { font-weight: 800; margin-bottom: 16px; color: #0f172a; display: flex; align-items: center; gap: 8px; font-size: 15px; }
 
-.loading-state {
-  padding: var(--space-4);
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  color: var(--color-muted);
-  font-size: 13px;
-}
-.skeleton-text {
-  height: 12px;
-  background: linear-gradient(90deg, var(--color-bg-muted), var(--color-primary-soft), var(--color-bg-muted));
-  background-size: 240% 100%;
-  border-radius: 4px;
-  margin-bottom: 10px;
-  animation: soft-pulse 1.2s linear infinite;
-}
+.loading-state { padding: 20px 0; }
+.skeleton-text { height: 12px; background: #f1f5f9; border-radius: 4px; margin-bottom: 10px; animation: pulse 1.5s infinite; }
 .skeleton-text.short { width: 60%; }
 @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
 .intent-badges { display: flex; gap: 12px; margin-bottom: 16px; }
-.intent-badge { background: var(--color-primary-soft); border: 1px solid var(--color-border); padding: 8px 12px; border-radius: var(--radius-control); display: flex; flex-direction: column; }
-.intent-badge.chart { background: var(--color-primary-soft); border-color: var(--color-primary-border); }
-.intent-badge .label { font-size: 10px; text-transform: uppercase; color: var(--color-muted); font-weight: 700; }
-.intent-badge .val { font-size: 14px; font-weight: 800; color: var(--color-primary); }
-.intent-badge.chart .val { color: var(--color-primary); }
+.intent-badge { background: #f0fdf4; border: 1px solid #dcfce7; padding: 8px 12px; border-radius: 8px; display: flex; flex-direction: column; }
+.intent-badge.chart { background: #eff6ff; border-color: #dbeafe; }
+.intent-badge .label { font-size: 10px; text-transform: uppercase; color: #64748b; font-weight: 700; }
+.intent-badge .val { font-size: 14px; font-weight: 800; color: #1f9d60; }
+.intent-badge.chart .val { color: #2563eb; }
 
-.reason-box { background: var(--color-primary-soft); border-radius: var(--radius-control); padding: 12px; font-size: 13px; line-height: 1.5; color: var(--color-text-soft); border-left: 4px solid var(--color-primary); margin-bottom: 16px; }
-.conf { font-size: 12px; color: var(--color-muted); margin: 8px 0 0; }
-.chartWrap {
-  width: 100%;
-  min-width: 0;
-  overflow: hidden;
-}
+.reason-box { background: #f8fafc; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.5; color: #334155; border-left: 4px solid #1f9d60; margin-bottom: 16px; }
+.conf { font-size: 12px; color: #64748b; margin: 8px 0 0; }
 .tableWrap { overflow-x: auto; max-width: 100%; }
 .chartWrap .data-table { margin-top: 0; }
 
 .extracted-section { margin-top: 16px; }
-.section-subtitle { font-size: 12px; font-weight: 700; color: var(--color-muted); margin-bottom: 8px; }
+.section-subtitle { font-size: 12px; font-weight: 700; color: #64748b; margin-bottom: 8px; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.data-table th { text-align: left; background: var(--color-bg-muted); padding: 8px; border-bottom: 1px solid var(--color-border); color: var(--color-muted); }
-.data-table td { padding: 8px; border-bottom: 1px solid var(--color-border); color: var(--color-text); }
+.data-table th { text-align: left; background: #f8fafc; padding: 8px; border-bottom: 1px solid #e2e8f0; color: #64748b; }
+.data-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; color: #0f172a; }
 .data-table td.empty { text-align: center; color: #94a3b8; padding: 20px; }
 
-.action-footer { display: flex; gap: 10px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); }
-.btn-sm { min-height: var(--control-sm); padding: 0 12px; border-radius: var(--radius-control); border: none; font-size: 12px; font-weight: 700; cursor: pointer; transition: all var(--motion-base); }
-.btn-sm.primary { background: var(--color-primary); color: white; }
-.btn-sm.secondary { background: var(--color-bg-muted); color: var(--color-text-soft); }
+.action-footer { display: flex; gap: 10px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #f1f5f9; }
+.btn-sm { padding: 6px 12px; border-radius: 6px; border: none; font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+.btn-sm.primary { background: #1f9d60; color: white; }
+.btn-sm.secondary { background: #f1f5f9; color: #475569; }
 .btn-sm:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
 
-.loading-chart { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--color-muted); font-size: 13px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-card); }
-.spinner { width: 30px; height: 30px; border: 3px solid var(--color-bg-muted); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
+.loading-chart { height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #64748b; font-size: 13px; }
+.spinner { width: 30px; height: 30px; border: 3px solid #f1f5f9; border-top-color: #1f9d60; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.error-box { background: var(--color-danger-soft); border: 1px solid #fee2e2; color: var(--color-danger); padding: 12px; border-radius: var(--radius-control); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.error-box { background: #fef2f2; border: 1px solid #fee2e2; color: #b91c1c; padding: 12px; border-radius: 8px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
 .formRow {
   margin-top: 10px;
 }
@@ -362,14 +253,10 @@ function needIllusText() {
   min-height: 90px;
   resize: vertical;
   font-size: 13px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--color-primary-border);
-  padding: var(--space-3);
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  padding: 10px;
   outline: none;
-}
-.ta:focus {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
 }
 </style>
 

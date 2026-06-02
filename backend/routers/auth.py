@@ -1,19 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.deps import require_user
-from backend.models import (
-    AuthResponse,
-    LoginRequest,
-    RegisterRequest,
-    UpdateMeRequest,
-    UpdateMeResponse,
-    UserDTO,
-)
+from backend.models import AuthResponse, LoginRequest, RegisterRequest, UserDTO
 from backend.services.auth import (
     create_token,
     create_user,
     get_user_by_username,
-    update_user,
     verify_password,
 )
 
@@ -80,56 +72,3 @@ async def login(req: LoginRequest) -> AuthResponse:
 @router.get("/me", response_model=UserDTO)
 async def me(user: dict = Depends(require_user)) -> UserDTO:
     return _to_user_dto(user)
-
-
-@router.patch("/me", response_model=UpdateMeResponse)
-async def update_me(
-    req: UpdateMeRequest,
-    user: dict = Depends(require_user),
-) -> UpdateMeResponse:
-    user_id = int(user["id"])
-    next_username = req.username.strip() if req.username is not None else None
-    next_email = req.email.strip() if req.email is not None else None
-    next_full_name = req.full_name.strip() if req.full_name is not None else None
-    next_organization = (
-        req.organization.strip() if req.organization is not None else None
-    )
-    next_password = req.new_password.strip() if req.new_password is not None else None
-
-    if next_username is not None:
-        if len(next_username) < 3:
-            raise HTTPException(status_code=400, detail="用户名至少 3 位")
-        existing = get_user_by_username(next_username)
-        if existing and int(existing["id"]) != user_id:
-            raise HTTPException(status_code=400, detail="用户名已存在")
-
-    if next_email is not None and next_email:
-        if "@" not in next_email or "." not in next_email:
-            raise HTTPException(status_code=400, detail="邮箱格式不正确")
-
-    if next_password is not None:
-        old_password = req.old_password or ""
-        if len(next_password) < 6:
-            raise HTTPException(status_code=400, detail="新密码至少 6 位")
-        if not verify_password(old_password, str(user["password_hash"])):
-            raise HTTPException(status_code=400, detail="当前密码不正确")
-
-    updated = update_user(
-        user_id,
-        username=next_username,
-        password=next_password,
-        full_name=next_full_name,
-        email=next_email,
-        organization=next_organization,
-    )
-    if not updated:
-        raise HTTPException(status_code=404, detail="用户不存在")
-
-    token = None
-    if next_username is not None or next_password is not None:
-        token = create_token(
-            int(updated["id"]),
-            str(updated["username"]),
-            bool(updated["is_admin"]),
-        )
-    return UpdateMeResponse(user=_to_user_dto(updated), token=token)

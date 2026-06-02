@@ -99,19 +99,6 @@ def validate_mermaid(src: Any) -> List[Tuple[str, str]]:
         re.I,
     ):
         return [("warn", "未识别常见 Mermaid 图类型前缀，仍尝试渲染")]
-    if re.match(r"^xychart-beta\b", s, re.I):
-        for line in s.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("title ") and not re.match(r'^title\s+"[^"]+"$', stripped):
-                return [("error", "xychart-beta 的 title 必须使用英文双引号包裹")]
-            if stripped.startswith("x-axis "):
-                if not re.match(r'^x-axis(\s+"[^"]+")?\s+\[[^\]]*\]$', stripped):
-                    return [("error", "xychart-beta 的 x-axis 必须使用合法的可选标题和类目数组")]
-                if "“" in stripped or "”" in stripped:
-                    return [("error", "xychart-beta 不支持中文弯引号，请使用英文双引号")]
-            if stripped.startswith("y-axis "):
-                if not re.match(r'^y-axis(\s+"[^"]+")?\s+[-+]?\d+(\.\d+)?\s+-->\s+[-+]?\d+(\.\d+)?$', stripped):
-                    return [("error", "xychart-beta 的 y-axis 必须使用合法的数值范围")]
     return []
 
 
@@ -158,8 +145,8 @@ def _extracted_to_chartjs(intent: str, chart_type: str, extracted: Dict[str, Any
             },
             "options": {"responsive": True},
         }
-    labels = ex.get("labels") or ex.get("categories") or ex.get("x") or []
-    values = ex.get("values") or ex.get("y") or []
+    labels = ex.get("labels") or ex.get("categories") or []
+    values = ex.get("values") or []
     if not values and ex.get("series") and isinstance(ex["series"], list) and ex["series"]:
         s0 = ex["series"][0]
         if isinstance(s0, dict) and s0.get("values"):
@@ -175,51 +162,15 @@ def _extracted_to_chartjs(intent: str, chart_type: str, extracted: Dict[str, Any
     }
 
 
-def _mermaid_text(value: Any, limit: int = 40) -> str:
-    text = str(value if value is not None else "").strip() or "未命名"
-    replacements = {
-        '"': "'",
-        "“": "'",
-        "”": "'",
-        "\n": " ",
-        "\r": " ",
-        "[": "(",
-        "]": ")",
-        "{": "(",
-        "}": ")",
-        "|": " ",
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    return text[:limit]
-
-
-def _mermaid_quoted(value: Any, limit: int = 40) -> str:
-    return '"' + _mermaid_text(value, limit) + '"'
-
-
-def _float_values(values: Any, limit: int = 12) -> List[float]:
-    out: List[float] = []
-    if not isinstance(values, list):
-        return out
-    for value in values[:limit]:
-        try:
-            out.append(float(value))
-        except Exception:
-            continue
-    return out
-
-
-def _extracted_to_mermaid(intent: str, chart_type: str, extracted: Dict[str, Any], title: str) -> str:
+def _extracted_to_mermaid(
+    intent: str, chart_type: str, extracted: Dict[str, Any], title: str
+) -> str:
     ex = extracted or {}
-    t = _mermaid_text(title or "图表", 40)
+    t = (title or "图表").replace('"', "'")[:40]
     if chart_type == "proportion_pie" or intent == "proportion":
         labels = ex.get("labels") or []
-        values = _float_values(ex.get("values") or [], 10)
-        lines = [
-            f"    {_mermaid_quoted(labels[i], 28)} : {values[i]:.6g}"
-            for i in range(min(len(labels), len(values)))
-        ]
+        values = ex.get("values") or []
+        lines = [f'    "{str(labels[i])}" : {float(values[i])}' for i in range(min(len(labels), len(values)))]
         if not lines:
             lines = ['    "A" : 50', '    "B" : 50']
         return f"pie title {t}\n" + "\n".join(lines)
@@ -230,14 +181,14 @@ def _extracted_to_mermaid(intent: str, chart_type: str, extracted: Dict[str, Any
         out = "flowchart LR\n"
         for i, s in enumerate(steps[:12]):
             sid = f"S{i}"
-            label = _mermaid_text(s, 24)
+            label = str(s).replace("[", "(").replace("]", ")")[:24]
             out += f"    {sid}[{label}]\n"
         for i in range(min(len(steps), 12) - 1):
             out += f"    S{i} --> S{i+1}\n"
         return out
     # 柱状/折线：使用 xychart-beta（Mermaid 10+）
-    labels = ex.get("labels") or ex.get("categories") or ex.get("x") or []
-    values = ex.get("values") or ex.get("y") or []
+    labels = ex.get("labels") or ex.get("categories") or []
+    values = ex.get("values") or []
     if not values and ex.get("series") and isinstance(ex["series"], list) and ex["series"]:
         s0 = ex["series"][0]
         if isinstance(s0, dict):
@@ -247,22 +198,18 @@ def _extracted_to_mermaid(intent: str, chart_type: str, extracted: Dict[str, Any
         labels = ["A", "B"]
     if not values:
         values = [1, 2]
-    numeric_values = _float_values(values, 8)
-    n = min(len(labels), len(numeric_values), 8)
-    labels = [_mermaid_quoted(labels[i], 12) for i in range(n)]
-    numeric_values = numeric_values[:n]
-    ymax = max(numeric_values) * 1.1 if numeric_values else 10
-    if ymax <= 0:
-        ymax = 10
-    data_list = "[" + ", ".join(f"{v:.6g}" for v in numeric_values) + "]"
+    n = min(len(labels), len(values), 8)
+    labels = [str(labels[i])[:12] for i in range(n)]
+    values = [float(values[i]) for i in range(n)]
+    ymax = max(values) * 1.1 if values else 10
+    bar_list = "[" + ", ".join(str(v) for v in values) + "]"
     x_list = "[" + ", ".join(labels) + "]"
-    mark = "line" if chart_type == "trend_line" or intent == "trend" else "bar"
     return (
         f"xychart-beta\n"
         f'    title "{t}"\n'
         f"    x-axis {x_list}\n"
-        f'    y-axis "值" 0 --> {ymax:.6g}\n'
-        f"    {mark} {data_list}\n"
+        f'    y-axis "值" 0 --> {ymax:.4g}\n'
+        f"    bar {bar_list}\n"
     )
 
 
@@ -298,8 +245,6 @@ def generate_chart_code_bundle(
             "多系列必须有 legend.data 且与 series.name 一致；tooltip 能区分系列；"
             "柱状/折线需 grid 与 splitLine；饼图须 avoidLabelOverlap。"
             "三套输出描述同一数据，数值与类别标签严格一致。"
-            "Mermaid 使用合法 pie / flowchart / xychart-beta；xychart-beta 的 title 必须加英文双引号，"
-            "x-axis 类目必须是英文双引号数组，如 x-axis [\"1月\", \"2月\"]；趋势图使用 line。"
         )
         if instructions:
             sys_p += f" 附加要求：{instructions}"
@@ -332,20 +277,13 @@ def generate_chart_code_bundle(
         except Exception:
             use_llm = False
 
-    mermaid_needs_repair = want_m and mer is not None and any(sev == "error" for sev, _msg in validate_mermaid(mer))
-    if not use_llm or opt is None or cjs is None or mer is None or mermaid_needs_repair:
+    if not use_llm or opt is None or cjs is None or mer is None:
         fo, fc, fm, _meta = _fallback_from_pipeline(slide)
         if opt is None and want_e:
             opt = fo
         if cjs is None and want_c:
             cjs = fc
-        if want_m and (mer is None or mermaid_needs_repair):
-            if mermaid_needs_repair:
-                issues.append({
-                    "target": "mermaid",
-                    "severity": "warn",
-                    "message": "LLM 返回的 Mermaid 语法不稳定，已使用本地规则重新生成。",
-                })
+        if mer is None and want_m:
             mer = fm
         if source == "llm":
             source = "llm+fallback"

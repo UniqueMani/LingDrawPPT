@@ -2,11 +2,8 @@ import type {
   AnalyzeResponse,
   AuthResponse,
   ExtractTextResponse,
-  FileDetail,
-  FileRecord,
   IllustrationStrategyResponse,
   SlideRequest,
-  UpdateMeResponse,
   UserDTO,
   VizLabChartCodeResponse,
   VizLabIllustrationResponse,
@@ -136,33 +133,6 @@ export async function me(baseUrl: string) {
   return (await res.json()) as UserDTO;
 }
 
-export async function updateMe(
-  baseUrl: string,
-  payload: {
-    username?: string;
-    full_name?: string;
-    email?: string;
-    organization?: string;
-    old_password?: string;
-    new_password?: string;
-  }
-) {
-  const b = normalizeBaseUrl(baseUrl);
-  if (!b) throw new Error("baseUrl 为空");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(`${b}/api/me`, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
-  }
-  return (await res.json()) as UpdateMeResponse;
-}
-
 export async function adminUsers(baseUrl: string) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
@@ -174,63 +144,5 @@ export async function adminUsers(baseUrl: string) {
     throw new Error(`HTTP ${res.status}: ${t}`);
   }
   return (await res.json()) as UserDTO[];
-}
-
-export async function getStats(baseUrl: string, days = 30) {
-  const b = normalizeBaseUrl(baseUrl);
-  if (!b) throw new Error("baseUrl 为空");
-  const res = await fetch(`${b}/api/stats?days=${days}`, {
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
-  }
-  return (await res.json()) as { events: Record<string, number>; detail: { name: string; label: string; count: number }[] };
-}
-
-export async function postStatsEvent(baseUrl: string, eventType: string) {
-  const b = normalizeBaseUrl(baseUrl);
-  if (!b) throw new Error("baseUrl 为空");
-  return await postJSON<{ ok: boolean }>(`${b}/api/stats/event`, { event_type: eventType });
-}
-
-// ---- 文件归档 API ----
-
-async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
-  }
-  return (await res.json()) as T;
-}
-
-export async function listFiles(baseUrl: string) {
-  const b = normalizeBaseUrl(baseUrl);
-  if (!b) throw new Error("baseUrl 为空");
-  return await getJSON<FileRecord[]>(`${b}/api/files`);
-}
-
-export async function getFileDetail(baseUrl: string, fileId: number) {
-  const b = normalizeBaseUrl(baseUrl);
-  if (!b) throw new Error("baseUrl 为空");
-  return await getJSON<FileDetail>(`${b}/api/files/${fileId}`);
-}
-
-export async function deleteFile(baseUrl: string, fileId: number) {
-  const b = normalizeBaseUrl(baseUrl);
-  if (!b) throw new Error("baseUrl 为空");
-  const res = await fetch(`${b}/api/files/${fileId}`, {
-    method: "DELETE",
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
-  }
-  return (await res.json()) as { ok: boolean; deleted_id: number };
 }
 

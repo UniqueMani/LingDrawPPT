@@ -5,9 +5,3 @@ __pycache__/
 node_modules/
 .workbuddy/
 .playwright-cli/
-.env
-*.db
-.vscode/
-backend/generated/
-backend/uploads/
-
