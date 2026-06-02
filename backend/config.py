@@ -34,3 +34,5 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123").strip()
 TEST_USERNAME = os.getenv("TEST_USERNAME", "tester").strip()
 TEST_PASSWORD = os.getenv("TEST_PASSWORD", "tester123").strip()
 
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "backend/uploads").strip()
+
