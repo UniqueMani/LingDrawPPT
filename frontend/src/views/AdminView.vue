@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import {
   adminClearLogs,
   adminDeleteFile,
@@ -27,10 +27,41 @@ import type {
 
 type Tab = "overview" | "users" | "files" | "logs";
 const router = useRouter();
-const activeTab = ref<Tab>("overview");
+const route = useRoute();
+
+function tabFromQuery(value: unknown): Tab {
+  return value === "users" || value === "files" || value === "logs" ? value : "overview";
+}
+
+const activeTab = ref<Tab>(tabFromQuery(route.query.tab));
 const busy = ref(false);
 const message = ref("");
 const error = ref("");
+const headerCopy = computed(() => {
+  const copy: Record<Tab, { eyebrow: string; title: string; description: string }> = {
+    overview: {
+      eyebrow: "管理后台",
+      title: "系统维护中心",
+      description: "查看用户、文件与系统使用情况。",
+    },
+    users: {
+      eyebrow: "用户管理",
+      title: "用户与权限管理",
+      description: "维护用户资料、启用状态与登录密码。",
+    },
+    files: {
+      eyebrow: "文件管理",
+      title: "上传文件管理",
+      description: "查询用户上传记录、解析状态与文件详情。",
+    },
+    logs: {
+      eyebrow: "日志维护",
+      title: "系统日志维护",
+      description: "查询、导出和清理使用日志，检查管理员审计记录。",
+    },
+  };
+  return copy[activeTab.value];
+});
 
 const overview = ref<AdminOverviewDTO | null>(null);
 const users = ref<AdminUserDTO[]>([]);
@@ -147,11 +178,6 @@ async function refresh() {
   }
 }
 
-async function switchTab(tab: Tab) {
-  activeTab.value = tab;
-  await refresh();
-}
-
 function openEdit(user: AdminUserDTO) {
   editUser.value = user;
   editForm.value = { full_name: user.full_name, email: user.email, organization: user.organization };
@@ -255,29 +281,26 @@ onMounted(async () => {
   }
   await refresh();
 });
+
+watch(
+  () => route.query.tab,
+  async (tab) => {
+    activeTab.value = tabFromQuery(tab);
+    await refresh();
+  },
+);
 </script>
 
 <template>
   <div class="admin-root">
     <header class="admin-head">
       <div>
-        <span class="eyebrow">管理员后台</span>
-        <h1>系统维护中心</h1>
-        <p>管理用户、上传文件和系统使用日志。</p>
+        <span class="eyebrow">{{ headerCopy.eyebrow }}</span>
+        <h1>{{ headerCopy.title }}</h1>
+        <p>{{ headerCopy.description }}</p>
       </div>
       <button class="btn secondary" type="button" :disabled="busy" @click="refresh">刷新数据</button>
     </header>
-
-    <nav class="admin-tabs">
-      <button v-for="tab in [
-        ['overview', '总览'],
-        ['users', '用户管理'],
-        ['files', '文件管理'],
-        ['logs', '日志维护'],
-      ]" :key="tab[0]" :class="{ active: activeTab === tab[0] }" @click="switchTab(tab[0] as Tab)">
-        {{ tab[1] }}
-      </button>
-    </nav>
 
     <p v-if="message" class="notice ok">{{ message }}</p>
     <p v-if="error" class="notice error">{{ error }}</p>
@@ -398,9 +421,9 @@ onMounted(async () => {
 .admin-head { justify-content: space-between; margin-bottom: 20px; }
 h1 { margin: 10px 0 4px; color: var(--color-text); font-size: 28px; } h2 { margin: 0 0 14px; font-size: 16px; } p { color: var(--color-muted); }
 .eyebrow { color: var(--color-primary); font-weight: 800; font-size: 12px; }
-.admin-tabs, .subtabs { display: flex; gap: 6px; padding: 4px; margin-bottom: 18px; border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-bg-muted); width: fit-content; }
-.admin-tabs button, .subtabs button { border: 0; border-radius: var(--radius-control); padding: 0 14px; background: transparent; color: var(--color-muted); font-weight: 800; cursor: pointer; }
-.admin-tabs button.active, .subtabs button.active { color: var(--color-primary); background: var(--color-surface); box-shadow: var(--shadow-card); }
+.subtabs { display: flex; gap: 6px; padding: 4px; margin-bottom: 18px; border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-bg-muted); width: fit-content; }
+.subtabs button { border: 0; border-radius: var(--radius-control); padding: 0 14px; background: transparent; color: var(--color-muted); font-weight: 800; cursor: pointer; }
+.subtabs button.active { color: var(--color-primary); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .stack { display: flex; flex-direction: column; gap: 16px; }.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .metric, .panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
 .metric { min-height: 104px; padding: 18px; }.metric span, .count, small { display: block; color: var(--color-muted); font-size: 12px; }.metric strong { display: block; margin-top: 12px; color: var(--color-primary); font-size: 28px; }
@@ -412,5 +435,5 @@ h1 { margin: 10px 0 4px; color: var(--color-text); font-size: 28px; } h2 { margi
 .notice { padding: 10px 12px; border-radius: var(--radius-control); font-size: 13px; }.notice.ok { color: #166534; background: #f0fdf4; }.notice.error { color: var(--color-danger); background: var(--color-danger-soft); }.maintenance { margin: 12px 0; padding: 12px; background: var(--color-bg-muted); border-radius: var(--radius-control); }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(26, 26, 26, .32); }.modal { width: min(440px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 20px; border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card-hover); }.modal-actions { justify-content: flex-end; margin-top: 4px; }
 @media (max-width: 900px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.two-col { grid-template-columns: 1fr; } }
-@media (max-width: 640px) { .admin-root { padding: var(--space-4); }.admin-tabs { width: 100%; overflow-x: auto; }.admin-tabs button { flex: 0 0 auto; }.metric-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .admin-root { padding: var(--space-4); }.metric-grid { grid-template-columns: 1fr; } }
 </style>

@@ -45,6 +45,8 @@ router.beforeEach((to, _from, next) => {
     next("/home");
   } else if (to.meta.requiresAdmin && store.currentUser && !store.currentUser.is_admin) {
     next("/home");
+  } else if (store.currentUser?.is_admin && (to.path === "/home" || to.path === "/workspace")) {
+    next("/admin");
   } else {
     next();
   }
