@@ -7,4 +7,6 @@ python-pptx
 python-multipart
 Pillow
 PyMuPDF
+numpy
+rapidocr-onnxruntime
 pywin32; platform_system == "Windows"

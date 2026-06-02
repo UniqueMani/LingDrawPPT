@@ -72,7 +72,7 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, username, password_hash, is_admin, full_name, email, organization, created_at FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, is_admin, is_active, disabled_at, full_name, email, organization, created_at FROM users WHERE username = ?",
             (username,),
         ).fetchone()
         return dict(row) if row else None
@@ -81,7 +81,7 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
 def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, username, password_hash, is_admin, full_name, email, organization, created_at FROM users WHERE id = ?",
+            "SELECT id, username, password_hash, is_admin, is_active, disabled_at, full_name, email, organization, created_at FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -147,9 +147,20 @@ def update_user(
 def list_users() -> list[Dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, username, is_admin, full_name, email, organization, created_at FROM users ORDER BY id DESC"
+            "SELECT id, username, is_admin, is_active, disabled_at, full_name, email, organization, created_at FROM users ORDER BY id DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def set_user_active(user_id: int, is_active: bool) -> Dict[str, Any]:
+    disabled_at = None if is_active else datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET is_active = ?, disabled_at = ? WHERE id = ?",
+            (1 if is_active else 0, disabled_at, user_id),
+        )
+        conn.commit()
+    return get_user_by_id(user_id) or {}
 
 
 def ensure_admin_user(username: str, password: str) -> None:

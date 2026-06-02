@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { store } from '../store';
 import { login, register, setAuthToken, getStats } from '../api/client';
 import ChartPreview from '../components/ChartPreview.vue';
 
 const authTab = ref<'login' | 'register'>('login');
+const router = useRouter();
 const authName = ref("");
 const authPwd = ref("");
 const regConfirmPwd = ref("");
@@ -37,6 +39,7 @@ async function doAuth() {
     setAuthToken(resp.token);
     store.addLog(`用户 ${resp.user.username} 登录成功`);
     await loadStats();
+    if (resp.user.is_admin) router.push('/admin');
   } catch (e: any) {
     authMessage.value = e?.message || String(e);
   } finally {
