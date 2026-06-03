@@ -18,6 +18,7 @@ const props = defineProps<{
   initialIntent?: string | null;
   initialChartType?: string | null;
   initialReason?: string | null;
+  hideSlideInput?: boolean;
 }>();
 const emit = defineEmits<{
   result: [result: VizLabChartCodeResponse];
@@ -244,8 +245,8 @@ onBeforeUnmount(() => {
 <template>
   <div class="panel-root">
     <div class="panel">
-      <h2>输入与 Prompt 约束</h2>
-      <SlideInputForm v-model="slide" />
+      <h2>{{ hideSlideInput ? "图表生成配置" : "输入与 Prompt 约束" }}</h2>
+      <SlideInputForm v-model="slide" :variant="hideSlideInput ? 'chart' : 'full'" />
       <div class="targets">
         <span class="tl">输出形态</span>
         <label><input v-model="tgtEcharts" type="checkbox" /> ECharts JSON</label>
@@ -256,7 +257,12 @@ onBeforeUnmount(() => {
         <label class="tl">附加约束（写入 LLM）</label>
         <textarea v-model="instructions" class="ta" rows="3" />
       </div>
-      <button class="btn" type="button" :disabled="loading || !slide.topic.trim()" @click="run">
+      <button
+        class="btn"
+        type="button"
+        :disabled="loading || !(slide.topic?.trim() || slide.body?.trim())"
+        @click="run"
+      >
         {{ loading ? "生成中…" : "生成可渲染代码" }}
       </button>
       <p v-if="err" class="err">{{ err }}</p>

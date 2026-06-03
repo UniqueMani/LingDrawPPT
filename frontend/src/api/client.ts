@@ -17,6 +17,8 @@ import type {
   VizLabChartCodeResponse,
   VizLabIllustrationResponse,
   VizLabIntentResponse,
+  AnalyzeDocumentResponse,
+  FluxGenerateImageResponse,
 } from "../types";
 
 let authToken = "";
@@ -89,6 +91,45 @@ export async function vizLabIllustration(
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
   return await postJSON<VizLabIllustrationResponse>(`${b}/api/viz-lab/illustration`, payload);
+}
+
+export async function analyzeDocumentConsistency(
+  baseUrl: string,
+  payload: { doc_title?: string; pages: Array<{ page: number; topic: string; body?: string }> }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<AnalyzeDocumentResponse>(`${b}/api/document/analyze-consistency`, payload);
+}
+
+export async function fluxGenerateImage(
+  baseUrl: string,
+  payload: {
+    selected_text: string;
+    topic?: string;
+    prompt?: string;
+    slide_page?: number;
+    use_doc_style?: boolean;
+    use_entity_sync?: boolean;
+    doc_consistency?: AnalyzeDocumentResponse | null;
+    preview_path?: string | null;
+    aspect_ratio?: string;
+    model?: string;
+    prompt_extend?: boolean;
+    extra_style_words?: string | null;
+  }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const body: Record<string, unknown> = { ...payload };
+  if (payload.doc_consistency) {
+    body.doc_consistency = {
+      style: payload.doc_consistency.style,
+      entities: payload.doc_consistency.entities,
+      slide_plans: payload.doc_consistency.slide_plans,
+    };
+  }
+  return await postJSON<FluxGenerateImageResponse>(`${b}/api/flux/generate-image`, body);
 }
 
 export async function extractText(baseUrl: string, file: File) {

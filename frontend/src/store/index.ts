@@ -1,5 +1,5 @@
 import { computed, reactive } from "vue";
-import type { SlideState, UserDTO } from "../types";
+import type { AnalyzeDocumentResponse, SlideState, UserDTO } from "../types";
 
 const base = reactive({
   baseUrl: "http://127.0.0.1:8000",
@@ -8,6 +8,7 @@ const base = reactive({
   slides: [] as SlideState[],
   currentIndex: 0,
   docName: "",
+  docConsistency: null as AnalyzeDocumentResponse | null,
   activityLogs: ["欢迎进入 LingDraw PPT Studio"],
   usageStats: {} as Record<string, number>,
 

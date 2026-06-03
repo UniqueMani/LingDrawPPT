@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { store } from "../store";
-import { analyze, extractText, illustration, ocrRegion } from "../api/client";
+import { analyze, analyzeDocumentConsistency, extractText, ocrRegion } from "../api/client";
 import ChartIntentPanel from "../components/ChartIntentPanel.vue";
 import ChartCodePanel from "../components/ChartCodePanel.vue";
 import IllustrationPromptPanel from "../components/IllustrationPromptPanel.vue";
-import type { SlideRequest, TextBlock, VizLabChartCodeResponse, VizLabIllustrationResponse } from "../types";
+import type { FluxGenerateImageResponse, SlideRequest, TextBlock, VizLabChartCodeResponse } from "../types";
 
 type FunctionMode = "preview" | "intent" | "code" | "illustration";
 type WorkflowStep = "intent" | "chart" | "illustration";
@@ -33,15 +33,7 @@ function zoomOut() {
 const activeWorkflowStep = ref<WorkflowStep>("intent");
 
 const currentSlide = computed(() => store.slides[store.currentIndex] ?? null);
-const currentIllustrationResult = computed(() => {
-  if (currentSlide.value?.vizIllustration) return currentSlide.value.vizIllustration;
-  const illustrationResult = currentSlide.value?.illustration?.illustration;
-  if (!illustrationResult) return null;
-  return {
-    ...illustrationResult,
-    experiment: null,
-  };
-});
+const currentPreviewUrl = computed(() => currentSlide.value?.previewUrl);
 const hasDoc = computed(() => store.slides.length > 0);
 const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
 const canPrev = computed(() => store.currentIndex > 0);
@@ -92,10 +84,25 @@ async function onPickFile(event: Event) {
         input: createInputFromPage(p.title || `第 ${p.page} 页`, p.text || ""),
         statusAnalyze: "idle",
         statusIllustration: "idle",
+        statusFluxImage: "idle",
         history: [],
       });
     }
     store.currentIndex = 0;
+    store.docConsistency = null;
+    try {
+      store.docConsistency = await analyzeDocumentConsistency(store.baseUrl, {
+        doc_title: resp.title || resp.filename,
+        pages: store.slides.map((s) => ({
+          page: s.page,
+          topic: s.input.topic,
+          body: s.input.body || s.sourceText || "",
+        })),
+      });
+      store.addLog(`文档级风格分析完成：${store.docConsistency.summary}`);
+    } catch (e: any) {
+      store.addLog(`文档风格分析跳过: ${e?.message || e}`);
+    }
     functionMode.value = "preview";
     activeWorkflowStep.value = "intent";
     zoomIdx.value = 2;
@@ -187,7 +194,6 @@ function clearRegionSelection(closeDialog = true) {
   regionDraft.value = null;
   regionSlideIndex.value = null;
   regionError.value = "";
-  regionSource.value = null;
   if (closeDialog) closeTextPicker();
 }
 
@@ -256,7 +262,6 @@ async function runOcrForRegion() {
       ...region,
     });
     textPickerValue.value = result.text;
-    regionSource.value = "ocr";
     if (!result.text.trim()) regionError.value = "未识别到文字，请调整框选区域后重试。";
   } catch (e: any) {
     regionError.value = e?.message || "OCR 识别失败";
@@ -277,7 +282,6 @@ async function finishRegionSelection(e: PointerEvent) {
   const nativeText = blocksInRegion(currentSlide.value?.textBlocks || [], regionDraft.value);
   if (nativeText) {
     textPickerValue.value = nativeText;
-    regionSource.value = "document";
     textPickerOpen.value = true;
     nextTick(() => textPickerRef.value?.focus());
     return;
@@ -301,7 +305,7 @@ function restoreCurrentSlideSourceText() {
   slide.input.data_description = slide.sourceDataDescription || "";
 }
 
-function selectWorkflowStep(step: WorkflowStep) {
+function selectModule(step: WorkflowStep) {
   rightCollapsed.value = false;
   restoreCurrentSlideSourceText();
   activeWorkflowStep.value = step;
@@ -351,62 +355,7 @@ async function generateChartOnly() {
   }
 }
 
-async function generateIllusOnly() {
-  const slide = currentSlide.value;
-  if (!slide) return;
-  slide.statusIllustration = "loading";
-  slide.errorIllustration = undefined;
-  try {
-    slide.illustration = await illustration(store.baseUrl, slide.input);
-    slide.statusIllustration = "success";
-    store.addLog(`第 ${store.currentIndex + 1} 页：已生成配图策略`);
-  } catch (e: any) {
-    slide.statusIllustration = "error";
-    slide.errorIllustration = e?.message || String(e);
-    store.addLog(`配图失败: ${slide.errorIllustration}`);
-  }
-}
-
-async function generateBoth() {
-  const slide = currentSlide.value;
-  if (!slide) return;
-  slide.statusAnalyze = "loading";
-  slide.statusIllustration = "loading";
-  slide.errorAnalyze = undefined;
-  slide.errorIllustration = undefined;
-
-  // 图表与配图独立执行，一个失败不影响另一个
-  const [chartResult, illusResult] = await Promise.allSettled([
-    analyze(store.baseUrl, slide.input),
-    illustration(store.baseUrl, slide.input),
-  ]);
-
-  if (chartResult.status === "fulfilled") {
-    slide.analyze = chartResult.value;
-    slide.statusAnalyze = "success";
-  } else {
-    slide.statusAnalyze = "error";
-    slide.errorAnalyze = chartResult.reason?.message || String(chartResult.reason);
-    store.addLog(`图表生成失败: ${slide.errorAnalyze}`);
-  }
-
-  if (illusResult.status === "fulfilled") {
-    slide.illustration = illusResult.value;
-    slide.statusIllustration = "success";
-  } else {
-    slide.statusIllustration = "error";
-    slide.errorIllustration = illusResult.reason?.message || String(illusResult.reason);
-    store.addLog(`配图生成失败: ${slide.errorIllustration}`);
-  }
-
-  if (chartResult.status === "fulfilled" && illusResult.status === "fulfilled") {
-    store.addLog(`第 ${store.currentIndex + 1} 页：图表与配图均已生成`);
-  }
-}
-
 const chartBusy = computed(() => currentSlide.value?.statusAnalyze === "loading");
-const illusBusy = computed(() => currentSlide.value?.statusIllustration === "loading");
-const anyBusy = computed(() => chartBusy.value || illusBusy.value);
 
 function onIntentPanelResult(semantic: Record<string, any>) {
   const slide = currentSlide.value;
@@ -424,12 +373,31 @@ function onChartCodeResult(result: VizLabChartCodeResponse) {
   slide.errorAnalyze = undefined;
 }
 
-function onVizIllustrationResult(result: VizLabIllustrationResponse) {
+function onFluxImageResult(result: FluxGenerateImageResponse) {
   const slide = currentSlide.value;
   if (!slide) return;
-  slide.vizIllustration = result;
-  slide.statusIllustration = "success";
-  slide.errorIllustration = undefined;
+  slide.fluxImage = result;
+  slide.statusFluxImage = "success";
+  slide.errorFluxImage = undefined;
+  const score = result.evaluation?.totalScore;
+  const pass = result.evaluation?.passed;
+  const extra =
+    score != null ? `（质量 ${score.toFixed(0)} 分${pass ? "，通过" : "，未达标"}）` : "";
+  store.addLog(`第 ${store.currentIndex + 1} 页：万相配图已生成${extra}`);
+}
+
+function onFluxImageError(message: string) {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.statusFluxImage = "error";
+  slide.errorFluxImage = message;
+  store.addLog(`万相配图失败: ${message}`);
+}
+
+function onFluxImageLoading(loading: boolean) {
+  const slide = currentSlide.value;
+  if (!slide) return;
+  slide.statusFluxImage = loading ? "loading" : slide.fluxImage ? "success" : "idle";
 }
 
 function workflowStepStatus(step: WorkflowStep) {
@@ -445,24 +413,9 @@ function workflowStepStatus(step: WorkflowStep) {
     if (slide.statusAnalyze === "error") return "失败";
     return slide.chartCode || slide.analyze?.chart ? "已完成" : "未运行";
   }
-  if (slide.statusIllustration === "loading") return "运行中";
-  if (slide.statusIllustration === "error") return "失败";
-  return slide.vizIllustration || slide.illustration?.illustration ? "已完成" : "未运行";
-}
-
-function workflowStepSummary(step: WorkflowStep) {
-  const slide = currentSlide.value;
-  if (!slide) return "等待上传文档";
-  if (step === "intent") {
-    const semantic = slide.intentSemantic || slide.analyze?.semantic;
-    return semantic?.intent || slide.analyze?.chart?.intent || "判断页面是否需要图表";
-  }
-  if (step === "chart") {
-    const chart = slide.analyze?.chart;
-    return slide.chartCode?.source ? `已生成图表代码 (${slide.chartCode.source})` : chart?.chartType ? `已生成 ${chart.chartType}` : "生成数据图表与可渲染配置";
-  }
-  const illus = slide.vizIllustration || slide.illustration?.illustration;
-  return illus ? `keywords: ${illus.keywords.length}` : "生成插图关键词与 Prompt";
+  if (slide.statusFluxImage === "loading") return "生成评估中";
+  if (slide.statusFluxImage === "error") return "失败";
+  return slide.fluxImage ? "已完成" : "未运行";
 }
 
 function workflowStepClass(step: WorkflowStep) {
@@ -483,9 +436,9 @@ const SPLIT_LAYOUT_MIN_PX = 769;
 const COLLAPSED_WIDTH = 34;
 const SIDE_LEFT_MIN = 300;
 const SIDE_LEFT_MAX = 420;
-const SIDE_RIGHT_MIN = 260;
-const SIDE_RIGHT_MAX = 760;
-const SIDE_RIGHT_MAX_RATIO = 0.5;
+const SIDE_RIGHT_MIN = 300;
+const SIDE_RIGHT_MAX = 880;
+const SIDE_RIGHT_MAX_RATIO = 0.52;
 const CENTER_MIN = 360;
 
 const workFullRef = ref<HTMLElement | null>(null);
@@ -502,7 +455,6 @@ const regionDraft = ref<RegionRect | null>(null);
 const regionSlideIndex = ref<number | null>(null);
 const regionLoading = ref(false);
 const regionError = ref("");
-const regionSource = ref<"document" | "ocr" | null>(null);
 const windowWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
 const leftColumnWidth = ref(0);
 const rightColumnWidth = ref(0);
@@ -541,7 +493,7 @@ function ensureColumnWidths(force = false) {
   if (!el || !splitLayoutHorizontal.value) return;
   const width = el.getBoundingClientRect().width;
   const defaultLeft = clamp(width * 0.18, SIDE_LEFT_MIN, SIDE_LEFT_MAX);
-  const defaultRight = clamp(width * 0.32, SIDE_RIGHT_MIN, Math.min(SIDE_RIGHT_MAX, width * SIDE_RIGHT_MAX_RATIO));
+  const defaultRight = clamp(width * 0.38, SIDE_RIGHT_MIN, Math.min(SIDE_RIGHT_MAX, width * SIDE_RIGHT_MAX_RATIO));
   const baseLeft = force || leftColumnWidth.value === 0 ? defaultLeft : leftColumnWidth.value;
   const baseRight = force || rightColumnWidth.value === 0 ? defaultRight : rightColumnWidth.value;
   const next = normalizeColumnWidths(width, baseLeft, baseRight);
@@ -893,7 +845,6 @@ onBeforeUnmount(() => {
               <button type="button" class="selection-close" title="关闭" aria-label="关闭" @click="closeTextPicker">×</button>
             </div>
             <p v-if="regionLoading">正在识别框选区域...</p>
-            <p v-else>{{ regionSource === "document" ? "来源：文档文字块" : "来源：OCR 识别" }}。可编辑后写入正文框。</p>
             <p v-if="regionError" class="selection-error">{{ regionError }}</p>
             <textarea ref="textPickerRef" v-model="textPickerValue" rows="8" :disabled="regionLoading" />
             <div class="selection-actions">
@@ -956,177 +907,138 @@ onBeforeUnmount(() => {
 
         <!-- 右：导航、缩放与全部操作 -->
         <aside class="action-column" :class="{ collapsed: rightCollapsed }">
-          <button
-            type="button"
-            class="collapse-toggle collapse-toggle--right"
-            :title="rightCollapsed ? '展开功能面板' : '收起功能面板'"
-            :aria-label="rightCollapsed ? '展开功能面板' : '收起功能面板'"
-            @click="toggleRightCollapsed"
-          >
-            {{ rightCollapsed ? '‹' : '›' }}
-          </button>
-          <div v-if="rightCollapsed" class="collapsed-rail-label">功能</div>
-          <template v-else>
-          <div class="tools-fixed">
-            <div class="tool-block">
-              <p class="tool-block-title">页面控制</p>
-              <header class="preview-toolbar">
-                <div class="tb-left">
-                  <span class="tb-doc">{{ store.docName }}</span>
-                  <span v-if="currentSlide" class="tb-status">{{ slideStatusShort(currentSlide) }}</span>
-                </div>
-                <div class="tb-center">
-                  <button type="button" class="tb-icon" :disabled="!canPrev" title="上一页（←）" @click="prevPage">‹</button>
-                  <span class="tb-page">第 {{ pageLabel }} 页</span>
-                  <button type="button" class="tb-icon" :disabled="!canNext" title="下一页（→）" @click="nextPage">›</button>
-                </div>
-                <div class="tb-zoom" aria-label="缩放">
-                  <button type="button" class="tb-zoom-btn" :disabled="zoomIdx <= 0" title="缩小" @click="zoomOut">−</button>
-                  <span class="tb-zoom-val">{{ zoomPercent }}%</span>
-                  <button
-                    type="button"
-                    class="tb-zoom-btn"
-                    :disabled="zoomIdx >= zoomSteps.length - 1"
-                    title="放大"
-                    @click="zoomIn"
-                  >
-                    +
-                  </button>
-                </div>
-                <button type="button" class="tb-replace" @click="resetDocument">更换文件</button>
-              </header>
-            </div>
-
-            <div class="tool-block">
-              <p class="tool-block-title">页面导航</p>
-              <div class="page-thumbs" aria-label="页面">
-                <button
-                  v-for="(s, i) in store.slides"
-                  :key="s.id"
-                  type="button"
-                  class="page-thumb"
-                  :class="{ active: i === store.currentIndex }"
-                  @click="goToPage(i)"
-                >
-                  <span class="thumb-index">{{ i + 1 }}</span>
-                  <span class="thumb-frame">
-                    <img v-if="s.thumbnailUrl" :src="s.thumbnailUrl" :alt="s.input.topic" />
-                    <span v-else class="thumb-fallback">{{ s.input.topic || `第 ${i + 1} 页` }}</span>
-                  </span>
-                  <span class="thumb-title">{{ s.input.topic || `第 ${i + 1} 页` }}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div class="workflow-head">
-            <div>
-              <p class="sec-label">三步工作流</p>
-              <h2>图表意图 → 数据图表 → 文生图插图</h2>
-            </div>
-            <button type="button" class="btn solid workflow-auto" :disabled="anyBusy || !currentSlide" @click="generateBoth">
-              <span v-if="chartBusy && illusBusy" class="btn-spinner"></span>
-              自动生成图表与插图策略
-            </button>
-          </div>
-
-          <details class="workflow-input">
-            <summary>当前页输入</summary>
-            <div class="parsed-preview">{{ currentSlide?.input.body || "当前页面暂无解析文本。" }}</div>
-            <div v-if="currentSlide?.input.data_description" class="parsed-data">
-              <span>结构化数据</span>
-              <pre>{{ currentSlide.input.data_description }}</pre>
-            </div>
-          </details>
-
-          <div class="workflow-steps" aria-label="工作流步骤">
-            <button type="button" class="workflow-step" :class="workflowStepClass('intent')" @click="selectWorkflowStep('intent')">
-              <span class="step-no">1</span>
-              <span class="step-main">
-                <b>图表意图</b>
-                <small>{{ workflowStepSummary("intent") }}</small>
-              </span>
-              <span class="step-status">{{ workflowStepStatus("intent") }}</span>
-            </button>
-            <button type="button" class="workflow-step" :class="workflowStepClass('chart')" @click="selectWorkflowStep('chart')">
-              <span class="step-no">2</span>
-              <span class="step-main">
-                <b>数据图表</b>
-                <small>{{ workflowStepSummary("chart") }}</small>
-              </span>
-              <span class="step-status">{{ workflowStepStatus("chart") }}</span>
-            </button>
+          <template v-if="rightCollapsed">
             <button
               type="button"
-              class="workflow-step"
-              :class="workflowStepClass('illustration')"
-              @click="selectWorkflowStep('illustration')"
+              class="collapse-toggle collapse-toggle--right collapse-toggle--compact"
+              title="展开功能面板"
+              aria-label="展开功能面板"
+              @click="toggleRightCollapsed"
             >
-              <span class="step-no">3</span>
-              <span class="step-main">
-                <b>文生图插图</b>
-                <small>{{ workflowStepSummary("illustration") }}</small>
-              </span>
-              <span class="step-status">{{ workflowStepStatus("illustration") }}</span>
+              ‹
             </button>
-          </div>
-
-          <div class="tools-scroll workflow-scroll">
-            <section v-if="activeWorkflowStep === 'intent'" class="tools-section workflow-panel">
-              <div class="workflow-panel-head">
-                <span class="fn-title">1. 图表意图</span>
-                <button type="button" class="btn ghost compact" :disabled="chartBusy || !currentSlide" @click="generateChartOnly">
-                  <span v-if="chartBusy" class="btn-spinner wine-spin"></span>
-                  重新分析意图
-                </button>
-              </div>
-              <ChartIntentPanel
-                v-if="currentSlide"
-                v-model:slide="currentSlide.input"
-                :initial-semantic="currentSlide.intentSemantic || currentSlide.analyze?.semantic || null"
-                :initial-reason="currentSlide.analyze?.chart?.reason || null"
-                :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
-                @result="onIntentPanelResult"
-              />
-            </section>
-
-            <section v-if="activeWorkflowStep === 'chart'" class="tools-section workflow-panel">
-              <div class="workflow-panel-head">
-                <span class="fn-title">2. 数据图表</span>
-                <button type="button" class="btn ghost compact" :disabled="chartBusy || !currentSlide" @click="generateChartOnly">
-                  <span v-if="chartBusy" class="btn-spinner wine-spin"></span>
-                  重新生成图表
-                </button>
-              </div>
-              <ChartCodePanel
-                v-if="currentSlide"
-                v-model:slide="currentSlide.input"
-                :initial-result="currentSlide.chartCode || null"
-                :initial-echarts-option="currentSlide.analyze?.chart?.echartsOption || null"
-                :initial-intent="currentSlide.analyze?.chart?.intent || null"
-                :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
-                :initial-reason="currentSlide.analyze?.chart?.reason || null"
-                @result="onChartCodeResult"
-              />
-            </section>
-
-            <section v-if="activeWorkflowStep === 'illustration'" class="tools-section workflow-panel">
-              <div class="workflow-panel-head">
-                <span class="fn-title">3. 文生图插图</span>
-                <button type="button" class="btn ghost compact" :disabled="illusBusy || !currentSlide" @click="generateIllusOnly">
-                  <span v-if="illusBusy" class="btn-spinner wine-spin"></span>
-                  重新生成插图策略
-                </button>
-              </div>
-              <IllustrationPromptPanel
-                v-if="currentSlide"
-                v-model:slide="currentSlide.input"
-                :initial-result="currentIllustrationResult"
-                @result="onVizIllustrationResult"
-              />
-            </section>
-          </div>
+            <div class="collapsed-rail-label">功能</div>
           </template>
+
+          <div v-else class="action-workspace">
+            <header class="action-top-bar">
+              <button
+                type="button"
+                class="collapse-toggle collapse-toggle--compact"
+                title="收起功能面板"
+                aria-label="收起功能面板"
+                @click="toggleRightCollapsed"
+              >
+                ›
+              </button>
+              <section class="current-input-panel" aria-label="当前页输入">
+                <div class="current-input-head">
+                  <p class="tool-block-title">当前页输入</p>
+                  <span v-if="currentSlide" class="current-input-page">第 {{ store.currentIndex + 1 }} 页</span>
+                </div>
+                <p v-if="currentSlide?.input.topic" class="current-input-topic">{{ currentSlide.input.topic }}</p>
+                <div class="parsed-preview">{{ currentSlide?.input.body || "当前页面暂无解析文本。" }}</div>
+                <div v-if="currentSlide?.input.data_description" class="parsed-data">
+                  <span>结构化数据</span>
+                  <pre>{{ currentSlide.input.data_description }}</pre>
+                </div>
+              </section>
+            </header>
+
+            <nav class="module-switcher module-switcher--compact" aria-label="功能模块">
+              <button type="button" class="module-tab" :class="workflowStepClass('intent')" @click="selectModule('intent')">
+                <span class="module-tab-mark" aria-hidden="true"></span>
+                <span class="module-tab-body">
+                  <span class="module-tab-title-row">
+                    <b>图表意图</b>
+                    <span class="module-status">{{ workflowStepStatus("intent") }}</span>
+                  </span>
+                </span>
+              </button>
+              <button type="button" class="module-tab" :class="workflowStepClass('chart')" @click="selectModule('chart')">
+                <span class="module-tab-mark" aria-hidden="true"></span>
+                <span class="module-tab-body">
+                  <span class="module-tab-title-row">
+                    <b>数据图表</b>
+                    <span class="module-status">{{ workflowStepStatus("chart") }}</span>
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="module-tab"
+                :class="workflowStepClass('illustration')"
+                @click="selectModule('illustration')"
+              >
+                <span class="module-tab-mark" aria-hidden="true"></span>
+                <span class="module-tab-body">
+                  <span class="module-tab-title-row">
+                    <b>文生图插图</b>
+                    <span class="module-status">{{ workflowStepStatus("illustration") }}</span>
+                  </span>
+                </span>
+              </button>
+            </nav>
+
+            <div class="module-viewport">
+              <section v-if="activeWorkflowStep === 'intent'" class="tools-section workflow-panel">
+                <div class="workflow-panel-head">
+                  <span class="fn-title">图表意图</span>
+                  <button type="button" class="btn ghost compact" :disabled="chartBusy || !currentSlide" @click="generateChartOnly">
+                    <span v-if="chartBusy" class="btn-spinner wine-spin"></span>
+                    重新分析意图
+                  </button>
+                </div>
+                <ChartIntentPanel
+                  v-if="currentSlide"
+                  v-model:slide="currentSlide.input"
+                  hide-slide-input
+                  :initial-semantic="currentSlide.intentSemantic || currentSlide.analyze?.semantic || null"
+                  :initial-reason="currentSlide.analyze?.chart?.reason || null"
+                  :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
+                  @result="onIntentPanelResult"
+                />
+              </section>
+
+              <section v-if="activeWorkflowStep === 'chart'" class="tools-section workflow-panel">
+                <div class="workflow-panel-head">
+                  <span class="fn-title">数据图表</span>
+                  <button type="button" class="btn ghost compact" :disabled="chartBusy || !currentSlide" @click="generateChartOnly">
+                    <span v-if="chartBusy" class="btn-spinner wine-spin"></span>
+                    重新生成图表
+                  </button>
+                </div>
+                <ChartCodePanel
+                  v-if="currentSlide"
+                  v-model:slide="currentSlide.input"
+                  hide-slide-input
+                  :initial-result="currentSlide.chartCode || null"
+                  :initial-echarts-option="currentSlide.analyze?.chart?.echartsOption || null"
+                  :initial-intent="currentSlide.analyze?.chart?.intent || null"
+                  :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
+                  :initial-reason="currentSlide.analyze?.chart?.reason || null"
+                  @result="onChartCodeResult"
+                />
+              </section>
+
+              <section v-if="activeWorkflowStep === 'illustration'" class="tools-section workflow-panel">
+                <div class="workflow-panel-head">
+                  <span class="fn-title">文生图插图</span>
+                </div>
+                <IllustrationPromptPanel
+                  v-if="currentSlide"
+                  v-model:slide="currentSlide.input"
+                  :slide-page="currentSlide.page"
+                  :doc-consistency="store.docConsistency"
+                  :preview-url="currentPreviewUrl"
+                  :initial-flux-image="currentSlide.fluxImage || null"
+                  @flux-result="onFluxImageResult"
+                  @flux-error="onFluxImageError"
+                  @flux-loading="onFluxImageLoading"
+                />
+              </section>
+            </div>
+          </div>
         </aside>
       </template>
 
@@ -1155,8 +1067,13 @@ onBeforeUnmount(() => {
           <IllustrationPromptPanel
             v-if="functionMode === 'illustration' && currentSlide"
             v-model:slide="currentSlide.input"
-            :initial-result="currentIllustrationResult"
-            @result="onVizIllustrationResult"
+            :slide-page="currentSlide.page"
+            :doc-consistency="store.docConsistency"
+            :preview-url="currentPreviewUrl"
+            :initial-flux-image="currentSlide.fluxImage || null"
+            @flux-result="onFluxImageResult"
+            @flux-error="onFluxImageError"
+            @flux-loading="onFluxImageLoading"
           />
         </div>
       </div>
@@ -1335,6 +1252,12 @@ onBeforeUnmount(() => {
 
 .action-column > .tools-fixed {
   display: none;
+}
+
+.action-column:not(.collapsed) > .action-workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
 }
 
 .page-control-column:not(.collapsed) .tools-fixed {
@@ -1667,6 +1590,20 @@ onBeforeUnmount(() => {
   justify-content: center;
   box-shadow: 0 8px 20px rgba(139, 41, 66, 0.08);
   transition: background var(--motion-base), color var(--motion-base), transform var(--motion-base), border-color var(--motion-base);
+}
+
+.collapse-toggle--compact {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  font-size: 13px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(139, 41, 66, 0.1);
+}
+
+.action-column.collapsed .collapse-toggle--compact {
+  margin: 6px auto 4px;
 }
 
 .collapse-toggle:hover {
@@ -2233,121 +2170,155 @@ onBeforeUnmount(() => {
   animation: panel-in var(--motion-slow) var(--motion-ease) both;
 }
 
-.workflow-head {
-  flex: 0 0 auto;
+.action-workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px 10px;
+  background: var(--color-surface);
+}
+
+.action-top-bar {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 0 var(--space-4) var(--space-3);
-  border-bottom: 1px solid var(--color-border);
+  gap: 8px;
+  min-width: 0;
 }
 
-.workflow-head h2 {
-  margin: 4px 0 0;
-  font-size: 15px;
-  font-weight: 900;
-  color: var(--color-text);
-  line-height: 1.35;
+.action-top-bar .collapse-toggle--compact {
+  margin-top: 6px;
 }
 
-.workflow-auto {
-  flex: 0 0 auto;
-  max-width: 220px;
-  justify-content: center;
-}
-
-.workflow-input {
-  flex: 0 0 auto;
-  margin: var(--space-3) var(--space-4) 0;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
+.current-input-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-primary-border);
   border-radius: var(--radius-card);
-  background: var(--color-bg);
+  background: var(--color-primary-soft);
+  box-shadow: none;
 }
 
-.workflow-input summary {
-  cursor: pointer;
-  font-size: 12px;
+.current-input-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.current-input-head .tool-block-title {
+  margin: 0;
+  color: var(--color-primary);
+}
+
+.current-input-page {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-primary-border);
+  color: var(--color-primary);
+  font-size: 11px;
   font-weight: 800;
-  color: var(--color-muted);
 }
 
-.workflow-input[open] summary {
-  margin-bottom: var(--space-3);
+.current-input-topic {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+  color: var(--color-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.workflow-steps {
+.current-input-panel .parsed-preview {
+  max-height: 56px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  border-color: var(--color-primary-border);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.current-input-panel .parsed-data {
+  margin-top: 6px;
+  padding: 6px 8px;
+  max-height: 48px;
+  overflow: auto;
+}
+
+.current-input-panel .parsed-data pre {
+  font-size: 11px;
+}
+
+.module-switcher {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-border);
 }
 
-.workflow-step {
+.module-tab {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  gap: 4px 8px;
-  align-items: center;
-  padding: 10px;
-  border: 1px solid var(--color-border);
+  grid-template-columns: 4px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--color-primary-border);
   border-radius: var(--radius-card);
-  background: var(--color-surface);
+  background: rgba(255, 255, 255, 0.88);
   color: var(--color-text-soft);
   text-align: left;
   cursor: pointer;
-  transition: border-color var(--motion-base), background var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base);
+  overflow: hidden;
+  transition:
+    border-color var(--motion-base),
+    background var(--motion-base),
+    box-shadow var(--motion-base),
+    transform var(--motion-base);
 }
 
-.workflow-step:hover {
-  border-color: var(--color-primary-border);
+.module-tab:hover {
+  border-color: var(--color-primary);
   transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(139, 41, 66, 0.1);
 }
 
-.workflow-step.active {
+.module-tab.active {
   border-color: var(--color-primary);
   background: var(--color-primary-soft);
-  box-shadow: 0 0 0 3px rgba(139, 41, 66, 0.1);
+  box-shadow: 0 0 0 3px rgba(139, 41, 66, 0.12);
 }
 
-.workflow-step.done .step-status {
-  color: var(--color-primary);
+.module-tab-mark {
+  background: transparent;
+  transition: background var(--motion-base);
 }
 
-.workflow-step.running .step-status {
-  color: var(--color-warning);
-}
-
-.workflow-step.error .step-status {
-  color: var(--color-danger);
-}
-
-.step-no {
-  grid-row: 1 / span 2;
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.module-tab.active .module-tab-mark {
   background: var(--color-primary);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 900;
 }
 
-.step-main {
-  min-width: 0;
+.module-switcher--compact .module-tab-body {
+  padding: 8px 8px 8px 6px;
+}
+
+.module-tab-title-row {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
 }
 
-.step-main b {
+.module-tab b {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2355,23 +2326,74 @@ onBeforeUnmount(() => {
   color: var(--color-text);
 }
 
-.step-main small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  color: var(--color-muted);
+.module-tab small {
+  display: none;
 }
 
-.step-status {
-  grid-column: 2;
+.module-status {
   font-size: 10px;
   font-weight: 800;
-  color: var(--color-muted-light);
 }
 
-.workflow-scroll {
-  padding-top: var(--space-4);
+.module-tab.done .module-status {
+  color: var(--color-primary);
+}
+
+.module-tab.running .module-status {
+  color: var(--color-warning);
+}
+
+.module-tab.error .module-status {
+  color: var(--color-danger);
+}
+
+.module-viewport {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-card);
+  background: #fff;
+  scrollbar-gutter: stable;
+}
+
+.module-viewport .workflow-panel {
+  min-height: min(100%, 520px);
+}
+
+.module-viewport :deep(.flux-img) {
+  max-height: min(56vh, 560px);
+  width: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
+.module-viewport :deep(.ech) {
+  min-height: 300px;
+  height: min(42vh, 400px);
+}
+
+.module-viewport :deep(.cj) {
+  min-height: 260px;
+}
+
+.module-viewport :deep(.mmd) {
+  min-height: 200px;
+}
+
+.module-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.module-viewport::-webkit-scrollbar-thumb {
+  background: rgba(139, 41, 66, 0.38);
+  border: 2px solid var(--color-primary-soft);
+  border-radius: 999px;
+}
+
+.module-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 41, 66, 0.58);
 }
 
 .workflow-panel {
@@ -2383,8 +2405,14 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-primary-border);
+}
+
+.workflow-panel-head .fn-title {
+  color: var(--color-primary);
+  font-weight: 900;
 }
 
 .btn.compact {

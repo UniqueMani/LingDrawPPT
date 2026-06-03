@@ -162,6 +162,9 @@ export interface SlideState {
   intentSemantic?: Record<string, any>;
   chartCode?: VizLabChartCodeResponse;
   vizIllustration?: VizLabIllustrationResponse;
+  fluxImage?: FluxGenerateImageResponse;
+  statusFluxImage: "idle" | "loading" | "success" | "error";
+  errorFluxImage?: string;
   statusAnalyze: "idle" | "loading" | "success" | "error";
   statusIllustration: "idle" | "loading" | "success" | "error";
   errorAnalyze?: string;
@@ -198,5 +201,65 @@ export interface VizLabIllustrationResponse {
   prompt: string;
   reason: string;
   experiment: Record<string, any>;
+}
+
+export interface ImageQualityDimensionScore {
+  key: string;
+  label: string;
+  score: number;
+  weight: number;
+  detail: string;
+}
+
+export interface ImageQualityEvaluation {
+  passed: boolean;
+  totalScore: number;
+  passThreshold: number;
+  dimensions: ImageQualityDimensionScore[];
+  feedback: string;
+}
+
+export interface DocumentStyleProfile {
+  domain: string;
+  style_tokens: string[];
+  style_prompt_zh: string;
+  color_palette: string[];
+  negative_style: string;
+}
+
+export interface SharedEntity {
+  id: string;
+  name: string;
+  visual_anchor: string;
+  color_hint: string;
+  pages: number[];
+  frequency: number;
+}
+
+export interface SlideVisualPlan {
+  page: number;
+  topic: string;
+  slide_role: string;
+  visual_focus: string;
+  entity_ids: string[];
+}
+
+export interface AnalyzeDocumentResponse {
+  style: DocumentStyleProfile;
+  entities: SharedEntity[];
+  slide_plans: SlideVisualPlan[];
+  summary: string;
+  source: string;
+}
+
+export interface FluxGenerateImageResponse {
+  taskId: string;
+  resultImageUrl: string;
+  originImageUrl?: string | null;
+  promptUsed: string;
+  mode: string;
+  attempts?: number;
+  regenerated?: boolean;
+  evaluation?: ImageQualityEvaluation | null;
 }
 
