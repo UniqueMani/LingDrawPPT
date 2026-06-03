@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 backend/generated/
 .env.example
+.env
+.env.*
