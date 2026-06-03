@@ -5,8 +5,6 @@ import type {
   AdminUserDTO,
   AuthResponse,
   ExtractTextResponse,
-  FileDetailDTO,
-  FileRecordDTO,
   IllustrationStrategyResponse,
   OCRRegionRequest,
   OCRRegionResponse,
@@ -19,6 +17,8 @@ import type {
   VizLabChartCodeResponse,
   VizLabIllustrationResponse,
   VizLabIntentResponse,
+  AnalyzeDocumentResponse,
+  FluxGenerateImageResponse,
 } from "../types";
 
 let authToken = "";
@@ -93,6 +93,45 @@ export async function vizLabIllustration(
   return await postJSON<VizLabIllustrationResponse>(`${b}/api/viz-lab/illustration`, payload);
 }
 
+export async function analyzeDocumentConsistency(
+  baseUrl: string,
+  payload: { doc_title?: string; pages: Array<{ page: number; topic: string; body?: string }> }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<AnalyzeDocumentResponse>(`${b}/api/document/analyze-consistency`, payload);
+}
+
+export async function fluxGenerateImage(
+  baseUrl: string,
+  payload: {
+    selected_text: string;
+    topic?: string;
+    prompt?: string;
+    slide_page?: number;
+    use_doc_style?: boolean;
+    use_entity_sync?: boolean;
+    doc_consistency?: AnalyzeDocumentResponse | null;
+    preview_path?: string | null;
+    aspect_ratio?: string;
+    model?: string;
+    prompt_extend?: boolean;
+    extra_style_words?: string | null;
+  }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const body: Record<string, unknown> = { ...payload };
+  if (payload.doc_consistency) {
+    body.doc_consistency = {
+      style: payload.doc_consistency.style,
+      entities: payload.doc_consistency.entities,
+      slide_plans: payload.doc_consistency.slide_plans,
+    };
+  }
+  return await postJSON<FluxGenerateImageResponse>(`${b}/api/flux/generate-image`, body);
+}
+
 export async function extractText(baseUrl: string, file: File) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
@@ -108,32 +147,6 @@ export async function extractText(baseUrl: string, file: File) {
     throw new Error(`HTTP ${res.status}: ${t}`);
   }
   return (await res.json()) as ExtractTextResponse;
-}
-
-export async function listFiles(baseUrl: string) {
-  return await adminFetch<FileRecordDTO[]>(baseUrl, "/api/files");
-}
-
-export async function getFileDetail(baseUrl: string, fileId: number) {
-  return await adminFetch<FileDetailDTO>(baseUrl, `/api/files/${fileId}`);
-}
-
-export async function deleteFile(baseUrl: string, fileId: number) {
-  return await adminFetch<{ ok: boolean }>(baseUrl, `/api/files/${fileId}`, { method: "DELETE" });
-}
-
-export async function downloadFile(baseUrl: string, fileId: number, filename: string) {
-  const b = normalizeBaseUrl(baseUrl);
-  const res = await fetch(`${b}/api/files/${fileId}/download`, {
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-  const url = URL.createObjectURL(await res.blob());
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 export async function ocrRegion(baseUrl: string, payload: OCRRegionRequest) {

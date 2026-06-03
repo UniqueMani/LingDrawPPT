@@ -10,6 +10,7 @@ const props = defineProps<{
   initialSemantic?: Record<string, any> | null;
   initialReason?: string | null;
   initialChartType?: string | null;
+  hideSlideInput?: boolean;
 }>();
 const emit = defineEmits<{
   result: [semantic: Record<string, any>];
@@ -93,9 +94,14 @@ async function run() {
 <template>
   <div class="panel-root">
     <div class="panel">
-      <h2>输入一页内容</h2>
-      <SlideInputForm v-model="slide" />
-      <button class="btn primary" type="button" :disabled="loading || !slide.topic.trim()" @click="run">
+      <h2 v-if="!hideSlideInput">输入一页内容</h2>
+      <SlideInputForm v-model="slide" :variant="hideSlideInput ? 'meta' : 'full'" />
+      <button
+        class="btn primary"
+        type="button"
+        :disabled="loading || !(slide.topic?.trim() || slide.body?.trim())"
+        @click="run"
+      >
         {{ loading ? "分析中…" : "运行意图分析" }}
       </button>
       <p v-if="err" class="err">{{ err }}</p>

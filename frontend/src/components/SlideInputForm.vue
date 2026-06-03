@@ -1,20 +1,40 @@
 <script setup lang="ts">
 import type { SlideRequest } from "../types";
 
+/** full：全部字段；meta：仅幻灯片类型与推理模式；chart：meta + 结构化数据（用于右侧工作区，正文在顶部展示） */
+withDefaults(
+  defineProps<{
+    variant?: "full" | "meta" | "chart";
+  }>(),
+  { variant: "full" }
+);
+
 const slide = defineModel<SlideRequest>({ required: true });
 </script>
 
 <template>
   <div class="sif">
-    <div class="f">
-      <label>页面主题</label>
-      <input v-model="slide.topic" type="text" class="inp" placeholder="本页标题" />
-    </div>
-    <div class="f">
-      <label>正文</label>
-      <textarea v-model="slide.body" class="ta" rows="4" placeholder="叙事、要点、自然语言描述…" />
-    </div>
-    <div class="f">
+    <template v-if="variant === 'full'">
+      <div class="f">
+        <label>页面主题</label>
+        <input v-model="slide.topic" type="text" class="inp" placeholder="本页标题" />
+      </div>
+      <div class="f">
+        <label>正文</label>
+        <textarea v-model="slide.body" class="ta" rows="4" placeholder="叙事、要点、自然语言描述…" />
+      </div>
+      <div class="f">
+        <label>结构化数据（可选）</label>
+        <textarea
+          v-model="slide.data_description"
+          class="ta dim"
+          rows="3"
+          placeholder="实体：指标 数值；多实体用分号分隔"
+        />
+      </div>
+    </template>
+
+    <div v-if="variant === 'chart'" class="f">
       <label>结构化数据（可选）</label>
       <textarea
         v-model="slide.data_description"
@@ -23,7 +43,8 @@ const slide = defineModel<SlideRequest>({ required: true });
         placeholder="实体：指标 数值；多实体用分号分隔"
       />
     </div>
-    <div class="row2">
+
+    <div v-if="variant === 'full' || variant === 'meta' || variant === 'chart'" class="row2">
       <div class="f tight">
         <label>幻灯片类型</label>
         <select v-model="slide.slide_type" class="sel">

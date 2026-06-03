@@ -52,7 +52,6 @@ class IllustrationStrategyResponse(BaseModel):
 
 
 class ExtractTextResponse(BaseModel):
-    file_id: int = 0
     filename: str
     text: str
     title: str = ""
@@ -157,22 +156,6 @@ class UploadedFileDTO(BaseModel):
     deleted_at: Optional[str] = None
 
 
-class FileRecordDTO(BaseModel):
-    id: int
-    original_filename: str
-    file_size: int = 0
-    pages: int = 0
-    parse_status: str
-    error_message: str = ""
-    created_at: str
-    updated_at: str
-
-
-class FileDetailDTO(FileRecordDTO):
-    pages_detail: List[Dict[str, Any]] = Field(default_factory=list)
-    extracted_text: str = ""
-
-
 class UsageLogDTO(BaseModel):
     id: int
     user_id: int
@@ -255,3 +238,115 @@ class VizLabIllustrationResponse(BaseModel):
     prompt: str = ""
     reason: str = ""
     experiment: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentStyleProfile(BaseModel):
+    domain: str = ""
+    style_tokens: List[str] = Field(default_factory=list)
+    style_prompt_zh: str = ""
+    color_palette: List[str] = Field(default_factory=list)
+    negative_style: str = ""
+
+
+class SharedEntity(BaseModel):
+    id: str
+    name: str
+    visual_anchor: str
+    color_hint: str = ""
+    pages: List[int] = Field(default_factory=list)
+    frequency: int = 0
+
+
+class SlideVisualPlan(BaseModel):
+    page: int
+    topic: str = ""
+    slide_role: str = ""
+    visual_focus: str = ""
+    entity_ids: List[str] = Field(default_factory=list)
+
+
+class DocumentPageInput(BaseModel):
+    page: int
+    topic: str = ""
+    body: str = ""
+
+
+class AnalyzeDocumentRequest(BaseModel):
+    doc_title: str = ""
+    pages: List[DocumentPageInput] = Field(default_factory=list)
+
+
+class AnalyzeDocumentResponse(BaseModel):
+    style: DocumentStyleProfile
+    entities: List[SharedEntity] = Field(default_factory=list)
+    slide_plans: List[SlideVisualPlan] = Field(default_factory=list)
+    summary: str = ""
+    source: str = "rules"
+
+
+class DocumentConsistencyPayload(BaseModel):
+    style: DocumentStyleProfile
+    entities: List[SharedEntity] = Field(default_factory=list)
+    slide_plans: List[SlideVisualPlan] = Field(default_factory=list)
+
+
+class FluxGenerateImageRequest(BaseModel):
+    selected_text: str = Field("", description="框选或写入的正文，用于构建出图 prompt")
+    topic: Optional[str] = Field(None, description="页面标题，selected_text 为空时作为备选")
+    prompt: str = Field("", description="直接指定 prompt（通常留空，由 selected_text 构建）")
+    slide_page: int = Field(1, description="当前幻灯片页码，用于多图协同")
+    use_doc_style: bool = Field(True, description="启用文档级统一风格约束")
+    use_entity_sync: bool = Field(True, description="启用共享实体库跨页一致")
+    doc_consistency: Optional[DocumentConsistencyPayload] = Field(
+        None, description="文档级风格与实体库（由 /document/analyze-consistency 生成）"
+    )
+    input_image_url: Optional[str] = Field(None, description="已弃用：万相文生图不支持参考图编辑")
+    preview_path: Optional[str] = Field(
+        None, description="当前页预览路径，用于评估与页面一致性，如 /previews/xxx.png"
+    )
+    use_page_preview: bool = Field(False, description="已弃用")
+    aspect_ratio: str = Field("16:9", description="输出宽高比：16:9、4:3、1:1、9:16、21:9")
+    model: str = Field(
+        "wan2.6-t2i",
+        description="万相模型，如 wan2.6-t2i、wan2.5-t2i-preview、wan2.2-t2i-flash",
+    )
+    enable_translation: bool = Field(False, description="保留字段，万相无需翻译")
+    prompt_upsampling: bool = Field(False, description="保留字段，请使用 prompt_extend")
+    prompt_extend: bool = Field(True, description="开启提示词智能改写")
+    extra_style_words: Optional[str] = Field(None, description="追加风格描述")
+    safety_tolerance: Optional[int] = Field(None, description="保留字段，万相不使用")
+
+
+class ImageQualityDimensionScore(BaseModel):
+    key: str
+    label: str
+    score: float
+    weight: float
+    detail: str
+
+
+class ImageQualityEvaluation(BaseModel):
+    passed: bool
+    totalScore: float
+    passThreshold: float
+    dimensions: List[ImageQualityDimensionScore] = Field(default_factory=list)
+    feedback: str = ""
+
+
+class ImageGenAttemptLog(BaseModel):
+    attempt: int
+    promptUsed: str
+    resultImageUrl: str
+    evaluation: ImageQualityEvaluation
+
+
+class FluxGenerateImageResponse(BaseModel):
+    taskId: str
+    resultImageUrl: str
+    originImageUrl: Optional[str] = None
+    promptUsed: str
+    mode: str = "generate"
+    attempts: int = 1
+    regenerated: bool = False
+    evaluation: Optional[ImageQualityEvaluation] = None
+    attemptsLog: List[ImageGenAttemptLog] = Field(default_factory=list)

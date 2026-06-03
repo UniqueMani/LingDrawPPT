@@ -4,12 +4,5 @@ __pycache__/
 *.pyc
 backend/generated/
 .env.example
-node_modules/
-.workbuddy/
-.playwright-cli/
-node_modules/
-.workbuddy/
 .env
-*.db
-.vscode/
-backend/uploads/
+.env.*

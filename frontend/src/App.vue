@@ -35,17 +35,16 @@ onMounted(async () => {
       setAuthToken(store.token);
       store.currentUser = await me(store.baseUrl);
       store.addLog(`欢迎回来，${store.currentUser.username}`);
-      if (!store.currentUser.is_admin) await store.fetchFiles();
       if (router.currentRoute.value.meta.requiresAdmin && !store.currentUser.is_admin) {
-        router.replace("/home");
-      } else if (store.currentUser.is_admin && ["/home", "/workspace", "/files"].includes(router.currentRoute.value.path)) {
-        router.replace("/admin");
+        router.push("/home");
+      } else if (store.currentUser.is_admin && ["/home", "/workspace"].includes(router.currentRoute.value.path)) {
+        router.push("/admin");
       }
     } catch {
       store.setToken("");
       setAuthToken("");
       store.currentUser = null;
-      router.replace("/home");
+      router.push("/home");
     }
   }
 });
@@ -74,7 +73,6 @@ onMounted(async () => {
           <span class="nav-group">流程</span>
           <router-link to="/home" class="nav-item">总览</router-link>
           <router-link to="/workspace" class="nav-item">工作台</router-link>
-          <router-link to="/files" class="nav-item">我的文件</router-link>
         </template>
       </nav>
       <div class="user-area">
@@ -88,10 +86,7 @@ onMounted(async () => {
     </header>
 
     <main class="main-content">
-      <div v-if="store.token && !store.currentUser" class="app-loading" aria-live="polite">
-        正在加载...
-      </div>
-      <router-view v-else v-slot="{ Component }">
+      <router-view v-slot="{ Component }">
         <transition name="fade" mode="out-in">
           <component :is="Component" />
         </transition>
@@ -222,15 +217,6 @@ body {
   display: flex;
   flex-direction: column;
   position: relative;
-}
-
-.app-loading {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-muted);
-  font-size: 14px;
 }
 
 .fade-enter-active,

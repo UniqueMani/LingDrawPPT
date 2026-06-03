@@ -9,4 +9,5 @@ Pillow
 PyMuPDF
 numpy
 rapidocr-onnxruntime
+httpx
 pywin32; platform_system == "Windows"
