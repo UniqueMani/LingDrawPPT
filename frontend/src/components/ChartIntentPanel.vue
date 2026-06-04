@@ -66,15 +66,6 @@ function llmStatusLabel(item: Record<string, any>) {
   return item.llmSucceeded ? "调用成功" : "调用失败，已降级";
 }
 
-const confidenceHelp = computed(() => {
-  const item = displaySemantic.value;
-  if (!item) return "";
-  if (item.source === "fallback" || item.source === "mock" || !item.llmAttempted) {
-    return "置信度来自本地规则：综合文本特征分数、第一候选与第二候选差距，以及数据是否足够结构化；它是启发式评分，不是严格概率。";
-  }
-  return "置信度由 DeepSeek 按提示自评给出，后端只做 0 到 1 的范围校验；若触发本地补全，会在来源和降级原因中标出。";
-});
-
 async function run() {
   loading.value = true;
   err.value = "";
@@ -130,10 +121,6 @@ async function run() {
           >大模型状态：{{ llmStatusLabel(displaySemantic) }}</span
         >
       </div>
-      <p v-if="confidenceHelp" class="note">{{ confidenceHelp }}</p>
-      <p v-if="displaySemantic.fallbackReason" class="reason warn">
-        降级原因：{{ displaySemantic.fallbackReason }}
-      </p>
       <p v-if="displayReason" class="reason">{{ displayReason }}</p>
       <details open>
         <summary>semantic JSON（含 scores 可导出做实验）</summary>

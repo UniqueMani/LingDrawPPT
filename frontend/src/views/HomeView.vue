@@ -39,6 +39,7 @@ async function doAuth() {
     setAuthToken(resp.token);
     store.addLog(`用户 ${resp.user.username} 登录成功`);
     await loadStats();
+    await store.fetchFiles();
     if (resp.user.is_admin) router.push('/admin');
   } catch (e: any) {
     authMessage.value = e?.message || String(e);

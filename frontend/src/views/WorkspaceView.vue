@@ -1,35 +1,55 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { store } from "../store";
-import { analyze, analyzeDocumentConsistency, extractText, ocrRegion } from "../api/client";
+import { analyze, analyzeDocumentConsistency, extractText, fluxGenerateImage, getFileDetail, ocrRegion } from "../api/client";
 import ChartIntentPanel from "../components/ChartIntentPanel.vue";
 import ChartCodePanel from "../components/ChartCodePanel.vue";
 import IllustrationPromptPanel from "../components/IllustrationPromptPanel.vue";
-import type { FluxGenerateImageResponse, SlideRequest, TextBlock, VizLabChartCodeResponse } from "../types";
+import {
+  beginFluxJob,
+  clearFluxRuntimeState,
+  completeFluxJob,
+  createFluxRequestKey,
+  failFluxJob,
+} from "../utils/fluxJobManager";
+import type {
+  FluxGenerateImagePayload,
+  FileRecord,
+  SlideRequest,
+  TextBlock,
+  VizLabChartCodeResponse,
+} from "../types";
 
 type FunctionMode = "preview" | "intent" | "code" | "illustration";
 type WorkflowStep = "intent" | "chart" | "illustration";
 
 const functionMode = ref<FunctionMode>("preview");
+const router = useRouter();
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploadLoading = ref(false);
 const uploadMessage = ref("");
+const openingRecentId = ref<number | null>(null);
+const recentMessage = ref("");
+const illustrationPanelRef = ref<{ runFluxGenerate: () => Promise<void> | void } | null>(null);
 
-/** 文档缩放档位（类似 PDF 阅读器） */
-const zoomSteps = [0.82, 0.88, 1, 1.12, 1.24] as const;
-const zoomIdx = ref(2);
-const zoomScale = computed(() => zoomSteps[zoomIdx.value] ?? 1);
-const zoomPercent = computed(() => Math.round(zoomScale.value * 100));
+const zoomPercent = ref(100);
+const zoomScale = computed(() => zoomPercent.value / 100);
 
-function zoomIn() {
-  if (zoomIdx.value < zoomSteps.length - 1) zoomIdx.value += 1;
+function normalizeZoom(value: number) {
+  if (!Number.isFinite(value)) return 100;
+  return Math.min(200, Math.max(50, Math.round(value)));
 }
 
-function zoomOut() {
-  if (zoomIdx.value > 0) zoomIdx.value -= 1;
+function setZoom(value: number | string) {
+  zoomPercent.value = normalizeZoom(Number(value));
 }
 
-/** 右侧：配图操作 vs 生成流水线 */
+function onZoomInput(event: Event) {
+  setZoom((event.target as HTMLInputElement).value);
+}
+
+/** 右侧三步工作流状态 */
 const activeWorkflowStep = ref<WorkflowStep>("intent");
 
 const currentSlide = computed(() => store.slides[store.currentIndex] ?? null);
@@ -38,6 +58,48 @@ const hasDoc = computed(() => store.slides.length > 0);
 const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
 const canPrev = computed(() => store.currentIndex > 0);
 const canNext = computed(() => store.currentIndex < store.slides.length - 1);
+const recentFiles = computed(() =>
+  store.files
+    .filter((file) => file.parse_status === "success")
+    .slice()
+    .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())
+    .slice(0, 4)
+);
+const functionModeTitle = computed(() => {
+  if (functionMode.value === "intent") return "图表意图";
+  if (functionMode.value === "code") return "图表代码";
+  if (functionMode.value === "illustration") return "文生图配图";
+  return "文档预览";
+});
+
+function runIllustrationImage() {
+  illustrationPanelRef.value?.runFluxGenerate();
+}
+
+function clearCurrentWorkspace() {
+  clearFluxRuntimeState(store.fluxJobs, store.slides);
+  store.slides = [];
+  store.currentIndex = 0;
+  store.docName = "";
+  store.currentFileId = 0;
+  store.docConsistency = null;
+  functionMode.value = "preview";
+  activeWorkflowStep.value = "intent";
+  zoomPercent.value = 100;
+  uploadMessage.value = "";
+  leftHoverMode.value = false;
+  leftHoverOpen.value = false;
+  leftPinned.value = false;
+}
+
+function exitEditor() {
+  const saved = store.saveCurrentWorkspaceDraft();
+  store.addLog(saved ? "已保存当前工作台编辑草稿" : "当前工作台没有可保存的文件草稿");
+  regionSelectionEnabled.value = false;
+  clearRegionSelection();
+  clearCurrentWorkspace();
+  router.push("/home");
+}
 
 function resolveAssetUrl(url?: string) {
   if (!url) return "";
@@ -64,12 +126,14 @@ async function onPickFile(event: Event) {
   try {
     const resp = await extractText(store.baseUrl, file);
     store.docName = resp.filename;
+    store.currentFileId = resp.file_id || 0;
+    clearFluxRuntimeState(store.fluxJobs, store.slides);
     store.slides = [];
 
     const pages =
       resp.pages_detail.length > 0
         ? resp.pages_detail
-        : [{ page: 1, title: resp.title || "第1页", text: resp.text, text_blocks: [] }];
+        : [{ page: 1, title: resp.title || "第 1 页", text: resp.text, text_blocks: [] }];
 
     for (const p of pages) {
       store.slides.push({
@@ -105,12 +169,14 @@ async function onPickFile(event: Event) {
     }
     functionMode.value = "preview";
     activeWorkflowStep.value = "intent";
-    zoomIdx.value = 2;
+    zoomPercent.value = 100;
     leftCollapsed.value = false;
     leftHoverMode.value = true;
     leftHoverOpen.value = false;
+    leftPinned.value = false;
     uploadMessage.value = "";
-    store.addLog(`成功上传并解析文件: ${resp.filename}，共 ${store.slides.length} 页`);
+    store.addLog(`成功上传并解析文件：${resp.filename}，共 ${store.slides.length} 页`);
+    store.fetchFiles();
   } catch (e: any) {
     uploadMessage.value = e?.message || "上传失败";
   } finally {
@@ -123,19 +189,62 @@ function triggerFilePick() {
   fileInput.value?.click();
 }
 
+async function openRecentFile(file: FileRecord) {
+  openingRecentId.value = file.id;
+  recentMessage.value = "";
+  try {
+    const detail = await getFileDetail(store.baseUrl, file.id);
+    const pages = detail.pages_detail.length
+      ? detail.pages_detail
+      : [{ page: 1, title: detail.original_filename, text: detail.extracted_text, text_blocks: [] }];
+    store.docName = detail.original_filename;
+    store.currentFileId = detail.id;
+    store.docConsistency = null;
+    store.slides = pages.map((page) => ({
+      id: `${newId()}_${page.page}`,
+      page: page.page,
+      previewUrl: resolveAssetUrl(page.preview_url),
+      thumbnailUrl: resolveAssetUrl(page.thumbnail_url || page.preview_url),
+      sourceTitle: page.title || `第 ${page.page} 页`,
+      sourceText: page.text || "",
+      textBlocks: page.text_blocks || [],
+      sourceDataDescription: "",
+      input: createInputFromPage(page.title || `第 ${page.page} 页`, page.text || ""),
+      statusAnalyze: "idle",
+      statusIllustration: "idle",
+      statusFluxImage: "idle",
+      history: [],
+    }));
+    const restored = store.restoreWorkspaceDraft(detail.id);
+    leftHoverMode.value = true;
+    leftCollapsed.value = false;
+    leftHoverOpen.value = false;
+    leftPinned.value = false;
+    functionMode.value = "preview";
+    activeWorkflowStep.value = "intent";
+    zoomPercent.value = 100;
+    store.addLog(
+      restored
+        ? `从最近文件恢复编辑草稿: ${detail.original_filename}`
+        : `从最近文件打开: ${detail.original_filename}`
+    );
+    nextTick(() => {
+      ensureColumnWidths(true);
+      setupFlowObserver();
+      scrollCurrentThumbIntoView();
+    });
+  } catch (error: any) {
+    recentMessage.value = error?.message || String(error);
+  } finally {
+    openingRecentId.value = null;
+  }
+}
+
 function resetDocument() {
   if (!hasDoc.value) return;
   if (!window.confirm("确定要更换文件吗？当前所有已生成结果将被清除，此操作不可撤销。")) return;
-  store.slides = [];
-  store.currentIndex = 0;
-  store.docName = "";
-  functionMode.value = "preview";
-  activeWorkflowStep.value = "intent";
-  zoomIdx.value = 2;
-  uploadMessage.value = "";
-  leftHoverMode.value = false;
-  leftHoverOpen.value = false;
-  store.addLog("已清除当前文档，可重新上传");
+  clearCurrentWorkspace();
+  store.addLog("当前文档已清除，可重新上传");
 }
 
 function prevPage() {
@@ -158,7 +267,7 @@ function goToPage(i: number) {
   scrollToSlide(i);
 }
 
-/** 滚动到指定页（连续阅读模式下平滑滚动） */
+/** 滚动到指定页面（连续阅读模式下平滑滚动） */
 function scrollToSlide(i: number) {
   const el = slideRefs.value[i];
   if (el && slidesViewportRef.value) {
@@ -329,14 +438,14 @@ function onPreviewKeydown(e: KeyboardEvent) {
 
 function slideStatusShort(sl: (typeof store.slides)[0]) {
   const c =
-    sl.statusAnalyze === "success" ? "图表✓" : sl.statusAnalyze === "loading" ? "图表…" : "图表—";
+    sl.statusAnalyze === "success" ? "chart-ok" : sl.statusAnalyze === "loading" ? "chart-loading" : "chart-idle";
   const i =
     sl.statusIllustration === "success"
-      ? "配图✓"
+      ? "image-ok"
       : sl.statusIllustration === "loading"
-        ? "配图…"
-        : "配图—";
-  return `${c} · ${i}`;
+        ? "image-loading"
+        : "image-idle";
+  return c + " / " + i;
 }
 
 async function generateChartOnly() {
@@ -351,7 +460,7 @@ async function generateChartOnly() {
   } catch (e: any) {
     slide.statusAnalyze = "error";
     slide.errorAnalyze = e?.message || String(e);
-    store.addLog(`图表失败: ${slide.errorAnalyze}`);
+    store.addLog(`图表生成失败：${slide.errorAnalyze}`);
   }
 }
 
@@ -373,31 +482,38 @@ function onChartCodeResult(result: VizLabChartCodeResponse) {
   slide.errorAnalyze = undefined;
 }
 
-function onFluxImageResult(result: FluxGenerateImageResponse) {
+function onFluxGenerateRequest(payload: FluxGenerateImagePayload) {
   const slide = currentSlide.value;
   if (!slide) return;
-  slide.fluxImage = result;
-  slide.statusFluxImage = "success";
-  slide.errorFluxImage = undefined;
-  const score = result.evaluation?.totalScore;
-  const pass = result.evaluation?.passed;
-  const extra =
-    score != null ? `（质量 ${score.toFixed(0)} 分${pass ? "，通过" : "，未达标"}）` : "";
-  store.addLog(`第 ${store.currentIndex + 1} 页：万相配图已生成${extra}`);
+  void startFluxImageJob(slide.id, payload);
 }
 
-function onFluxImageError(message: string) {
-  const slide = currentSlide.value;
-  if (!slide) return;
-  slide.statusFluxImage = "error";
-  slide.errorFluxImage = message;
-  store.addLog(`万相配图失败: ${message}`);
-}
+async function startFluxImageJob(slideId: string, payload: FluxGenerateImagePayload) {
+  const targetSlide = store.slides.find((s) => s.id === slideId);
+  if (!targetSlide) return;
 
-function onFluxImageLoading(loading: boolean) {
-  const slide = currentSlide.value;
-  if (!slide) return;
-  slide.statusFluxImage = loading ? "loading" : slide.fluxImage ? "success" : "idle";
+  const requestKey = createFluxRequestKey(slideId);
+  beginFluxJob(store.fluxJobs, targetSlide, requestKey);
+  store.addLog(`第 ${targetSlide.page} 页：文生图生成已开始`);
+
+  try {
+    const result = await fluxGenerateImage(store.baseUrl, payload);
+    const applied = completeFluxJob(store.fluxJobs, store.slides, slideId, requestKey, result);
+    if (!applied) return;
+
+    const score = result.evaluation?.totalScore;
+    const pass = result.evaluation?.passed;
+    const extra =
+      score != null ? " (quality " + score.toFixed(0) + (pass ? ", passed" : ", below threshold") + ")" : "";
+    const completedSlide = store.slides.find((s) => s.id === slideId);
+    store.addLog(`第 ${completedSlide?.page ?? targetSlide.page} 页：文生图已生成${extra}`);
+  } catch (e: any) {
+    const message = e?.message || String(e);
+    const applied = failFluxJob(store.fluxJobs, store.slides, slideId, requestKey, message);
+    if (!applied) return;
+    const failedSlide = store.slides.find((s) => s.id === slideId);
+    store.addLog(`第 ${failedSlide?.page ?? targetSlide.page} 页：文生图生成失败：${message}`);
+  }
 }
 
 function workflowStepStatus(step: WorkflowStep) {
@@ -423,7 +539,7 @@ function workflowStepClass(step: WorkflowStep) {
   return {
     active: activeWorkflowStep.value === step,
     done: status === "已完成",
-    running: status === "运行中",
+    running: status === "运行中" || (step === "illustration" && currentSlide.value?.statusFluxImage === "loading"),
     error: status === "失败",
   };
 }
@@ -431,7 +547,7 @@ function workflowStepClass(step: WorkflowStep) {
 
 /** 可拖拽调节左右栏比例（桌面横向分栏时显示分隔条） */
 const SPLITTER_PX = 6;
-/** 与下方 @media (max-width: 768px) 对齐：≤768 纵向堆叠，不显示拖拽条 */
+/** 与下方 @media (max-width: 768px) 对齐：窄屏纵向堆叠，不显示拖拽条 */
 const SPLIT_LAYOUT_MIN_PX = 769;
 const COLLAPSED_WIDTH = 34;
 const SIDE_LEFT_MIN = 300;
@@ -462,9 +578,10 @@ const leftCollapsed = ref(true);
 const rightCollapsed = ref(false);
 const isSplitDragging = ref(false);
 const activeSplitter = ref<"left" | "right" | null>(null);
-/** 上传文件后启用左边栏 hover 抽屉模式 */
+/** 上传文件后启用左侧栏 hover 抽屉模式 */
 const leftHoverMode = ref(false);
 const leftHoverOpen = ref(false);
+const leftPinned = ref(false);
 let flowObserver: IntersectionObserver | null = null;
 const flowIntersectionRatios = new Map<Element, number>();
 
@@ -506,13 +623,13 @@ const workFullStyle = computed(() => {
   if (!splitLayoutHorizontal.value) {
     return { display: "flex", flexDirection: "column" as const };
   }
-  /** hover 抽屉模式下左边栏脱离 Grid 流 → 3 列：阅读区 | 分隔条 | 功能区 */
+  /** hover 抽屉模式下左侧栏脱离 Grid 流：阅读区 | 分隔条 | 功能区 */
   if (leftHoverMode.value) {
     const rightWidth = rightCollapsed.value ? COLLAPSED_WIDTH : rightColumnWidth.value || SIDE_RIGHT_MIN;
     const rightSplit = rightCollapsed.value ? 0 : SPLITTER_PX;
     return {
       display: "grid",
-      gridTemplateColumns: `minmax(${CENTER_MIN}px, 1fr) ${rightSplit}px ${rightWidth}px`,
+      gridTemplateColumns: "minmax(" + CENTER_MIN + "px, 1fr) " + rightSplit + "px " + rightWidth + "px",
       alignItems: "stretch",
     };
   }
@@ -522,7 +639,17 @@ const workFullStyle = computed(() => {
   const rightSplit = rightCollapsed.value ? 0 : SPLITTER_PX;
   return {
     display: "grid",
-    gridTemplateColumns: `${leftWidth}px ${leftSplit}px minmax(${CENTER_MIN}px, 1fr) ${rightSplit}px ${rightWidth}px`,
+    gridTemplateColumns:
+      leftWidth +
+      "px " +
+      leftSplit +
+      "px minmax(" +
+      CENTER_MIN +
+      "px, 1fr) " +
+      rightSplit +
+      "px " +
+      rightWidth +
+      "px",
     alignItems: "stretch",
   };
 });
@@ -579,7 +706,13 @@ function startSplitDrag(e: PointerEvent, side: "left" | "right") {
 function toggleLeftCollapsed() {
   endSplitDrag();
   if (leftHoverMode.value) {
-    leftHoverOpen.value = !leftHoverOpen.value;
+    if (!leftHoverOpen.value && !leftPinned.value) {
+      leftHoverOpen.value = true;
+    } else {
+      leftPinned.value = !leftPinned.value;
+      leftHoverOpen.value = leftPinned.value;
+    }
+    nextTick(() => scrollCurrentThumbIntoView());
     return;
   }
   leftCollapsed.value = !leftCollapsed.value;
@@ -596,7 +729,7 @@ function openLeftHoverPanel() {
 }
 
 function closeLeftHoverPanel() {
-  if (leftHoverMode.value) leftHoverOpen.value = false;
+  if (leftHoverMode.value && !leftPinned.value) leftHoverOpen.value = false;
 }
 
 function toggleRightCollapsed() {
@@ -691,11 +824,15 @@ function setSlideRef(el: any, i: number) {
 }
 
 onMounted(() => {
+  if (store.token && store.files.length === 0) {
+    void store.fetchFiles();
+  }
   // 从其他页面返回时恢复 hover 侧栏，收起时仅保留窄触发轨道。
   if (store.slides.length > 0) {
     leftHoverMode.value = true;
     leftCollapsed.value = false;
     leftHoverOpen.value = false;
+    leftPinned.value = false;
   }
   window.addEventListener("keydown", previewKeydownSplitAware);
   window.addEventListener("resize", onWindowResize);
@@ -710,32 +847,81 @@ onBeforeUnmount(() => {
   endSplitDrag();
   destroyFlowObserver();
 });
+
+void ChartIntentPanel;
+void ChartCodePanel;
+void IllustrationPromptPanel;
+void currentPreviewUrl;
+void runIllustrationImage;
+void selectModule;
+void backToPreview;
+void generateChartOnly;
+void chartBusy;
+void onIntentPanelResult;
+void onChartCodeResult;
+void onFluxGenerateRequest;
+void workflowStepClass;
 </script>
 
 <template>
   <div class="workspace-root">
     <div v-if="!hasDoc" class="upload-phase">
-      <div class="upload-card">
-        <p class="upload-badge">第一步</p>
-        <h2>上传 PDF 或 PPT</h2>
-        <p class="upload-lead">
-          支持 .pptx 与 .pdf。解析后左侧为全宽文档预览，右侧为翻页、缩放、配图与生成等全部操作。
-        </p>
+      <div class="upload-stack">
+        <div class="upload-card">
+          <p class="upload-badge">第一步</p>
+          <h2>上传 PDF 或 PPT</h2>
+          <p class="upload-lead">
+            支持 .pptx 和 .pdf。解析后可在工作台中预览、翻页、缩放、配图和生成内容。
+          </p>
 
-        <div class="drop-zone" @click="triggerFilePick">
-          <div v-if="!uploadLoading" class="hint">
-            <span class="icon">📁</span>
-            <span>点击选择文件</span>
+          <div class="drop-zone" @click="triggerFilePick">
+            <div v-if="!uploadLoading" class="hint">
+              <span class="file-glyph" aria-hidden="true"></span>
+              <span>点击选择文件</span>
+            </div>
+            <div v-else class="loader">
+              <div class="spinner"></div>
+              <p>{{ uploadMessage }}</p>
+            </div>
           </div>
-          <div v-else class="loader">
-            <div class="spinner"></div>
-            <p>{{ uploadMessage }}</p>
-          </div>
+
+          <input ref="fileInput" type="file" accept=".pptx,.pdf" class="hidden" @change="onPickFile" />
+
+          <p v-if="uploadMessage && !uploadLoading" class="msg">{{ uploadMessage }}</p>
         </div>
 
-        <input ref="fileInput" type="file" accept=".pptx,.pdf" class="hidden" @change="onPickFile" />
+        <section class="recent-files-card" aria-label="最近文件">
+          <div class="recent-files-head">
+            <div>
+              <p class="section-kicker">继续编辑</p>
+              <h3>最近文件</h3>
+            </div>
+            <button type="button" class="recent-refresh" :disabled="store.filesLoading" @click="store.fetchFiles">
+              {{ store.filesLoading ? "刷新中" : "刷新" }}
+            </button>
+          </div>
 
-        <p v-if="uploadMessage && !uploadLoading" class="msg">{{ uploadMessage }}</p>
+          <div v-if="recentFiles.length" class="recent-list">
+            <button
+              v-for="file in recentFiles"
+              :key="file.id"
+              type="button"
+              class="recent-file-item"
+              :disabled="openingRecentId === file.id"
+              @click="openRecentFile(file)"
+            >
+              <span class="recent-file-main">
+                <b>{{ file.original_filename }}</b>
+                <small>{{ file.pages || 0 }} 页 · {{ new Date(file.updated_at || file.created_at).toLocaleString() }}</small>
+              </span>
+              <span class="recent-file-action">{{ openingRecentId === file.id ? "打开中" : "继续" }}</span>
+            </button>
+          </div>
+          <p v-else class="recent-empty">
+            暂无可继续编辑的文件。上传文档后会显示在这里。
+          </p>
+          <p v-if="recentMessage" class="msg">{{ recentMessage }}</p>
+        </section>
       </div>
     </div>
 
@@ -746,7 +932,8 @@ onBeforeUnmount(() => {
           :class="{
             collapsed: !leftHoverMode && leftCollapsed,
             'page-control-column--hover': leftHoverMode,
-            'page-control-column--open': leftHoverOpen,
+            'page-control-column--open': leftHoverOpen || leftPinned,
+            'page-control-column--pinned': leftPinned,
           }"
           @mouseenter="openLeftHoverPanel"
           @mouseleave="closeLeftHoverPanel"
@@ -755,14 +942,14 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="collapse-toggle collapse-toggle--left"
-            :title="leftHoverMode ? (leftHoverOpen ? '收起页面控制' : '展开页面控制') : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
-            :aria-label="leftHoverMode ? (leftHoverOpen ? '收起页面控制' : '展开页面控制') : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
+            :title="leftHoverMode ? (leftPinned ? '取消固定页面控制' : '固定页面控制') : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
+            :aria-label="leftHoverMode ? (leftPinned ? '取消固定页面控制' : '固定页面控制') : (leftCollapsed ? '展开页面控制' : '收起页面控制')"
             @click.stop="toggleLeftCollapsed"
           >
-            {{ leftHoverMode ? (leftHoverOpen ? '‹' : '›') : (leftCollapsed ? '›' : '‹') }}
+            {{ leftHoverMode ? (leftPinned ? '×' : ((leftHoverOpen || leftPinned) ? '‹' : '›')) : (leftCollapsed ? '›' : '‹') }}
           </button>
           <div v-if="leftHoverMode" class="hover-rail-label">页面控制</div>
-          <div v-else-if="leftCollapsed" class="collapsed-rail-label">页</div>
+          <div v-else-if="leftCollapsed" class="collapsed-rail-label">页面</div>
           <div v-if="leftHoverMode || !leftCollapsed" class="tools-fixed">
             <div class="tool-block page-control-block">
               <p class="tool-block-title">页面控制</p>
@@ -772,22 +959,32 @@ onBeforeUnmount(() => {
                   <span v-if="currentSlide" class="tb-status">{{ slideStatusShort(currentSlide) }}</span>
                 </div>
                 <div class="tb-center">
-                  <button type="button" class="tb-icon" :disabled="!canPrev" title="上一页（←）" @click="prevPage">‹</button>
+                  <button type="button" class="tb-icon" :disabled="!canPrev" title="上一页" @click="prevPage">‹</button>
                   <span class="tb-page">第 {{ pageLabel }} 页</span>
-                  <button type="button" class="tb-icon" :disabled="!canNext" title="下一页（→）" @click="nextPage">›</button>
+                  <button type="button" class="tb-icon" :disabled="!canNext" title="下一页" @click="nextPage">›</button>
                 </div>
                 <div class="tb-zoom" aria-label="缩放">
-                  <button type="button" class="tb-zoom-btn" :disabled="zoomIdx <= 0" title="缩小" @click="zoomOut">−</button>
-                  <span class="tb-zoom-val">{{ zoomPercent }}%</span>
-                  <button
-                    type="button"
-                    class="tb-zoom-btn"
-                    :disabled="zoomIdx >= zoomSteps.length - 1"
-                    title="放大"
-                    @click="zoomIn"
-                  >
-                    +
-                  </button>
+                  <input
+                    class="tb-zoom-range"
+                    type="range"
+                    min="50"
+                    max="200"
+                    step="1"
+                    :value="zoomPercent"
+                    @input="onZoomInput"
+                  />
+                  <label class="tb-zoom-input-wrap">
+                    <input
+                      class="tb-zoom-input"
+                      type="number"
+                      min="50"
+                      max="200"
+                      step="1"
+                      :value="zoomPercent"
+                      @change="onZoomInput"
+                    />
+                    <span>%</span>
+                  </label>
                 </div>
                 <button type="button" class="tb-replace" @click="resetDocument">更换文件</button>
               </header>
@@ -808,9 +1005,9 @@ onBeforeUnmount(() => {
                   <span class="thumb-index">{{ i + 1 }}</span>
                   <span class="thumb-frame">
                     <img v-if="s.thumbnailUrl" :src="s.thumbnailUrl" :alt="s.input.topic" />
-                    <span v-else class="thumb-fallback">{{ s.input.topic || `第 ${i + 1} 页` }}</span>
+                    <span v-else class="thumb-fallback">{{ s.input.topic || ("第 " + (i + 1) + " 页") }}</span>
                   </span>
-                  <span class="thumb-title">{{ s.input.topic || `第 ${i + 1} 页` }}</span>
+                  <span class="thumb-title">{{ s.input.topic || ("第 " + (i + 1) + " 页") }}</span>
                 </button>
               </div>
             </div>
@@ -827,18 +1024,29 @@ onBeforeUnmount(() => {
           title="拖动调整页面控制和预览宽度"
           @pointerdown="startSplitDrag($event, 'left')"
         />
-        <!-- 中：连续阅读模式（所有页面纵向排列） -->
+        <!-- 中间：连续阅读模式（所有页面纵向排列） -->
         <section class="reader-column" aria-label="文档预览">
-          <button
-            type="button"
-            class="selection-trigger"
-            :class="{ active: regionSelectionEnabled }"
-            title="框选幻灯片区域并提取文字"
-            aria-label="框选幻灯片区域并提取文字"
-            @click="toggleRegionSelection"
-          >
-            {{ regionSelectionEnabled ? "退出框选" : "框选文字" }}
-          </button>
+          <div class="reader-actions">
+            <button
+              type="button"
+              class="reader-action-btn exit-editor-btn"
+              title="保存当前生成结果并退出工作台"
+              aria-label="保存当前生成结果并退出工作台"
+              @click="exitEditor"
+            >
+              退出编辑
+            </button>
+            <button
+              type="button"
+              class="reader-action-btn selection-trigger"
+              :class="{ active: regionSelectionEnabled }"
+              title="框选幻灯片区域并提取文字"
+              aria-label="框选幻灯片区域并提取文字"
+              @click="toggleRegionSelection"
+            >
+              {{ regionSelectionEnabled ? "退出框选" : "框选文字" }}
+            </button>
+          </div>
           <div v-if="textPickerOpen" class="selection-popover" role="dialog" aria-label="确认提取文字">
             <div class="selection-popover-head">
               <strong>确认提取文字</strong>
@@ -853,7 +1061,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div ref="slidesViewportRef" class="reader-viewport reader-viewport--flow">
-            <div class="slide-stage" :style="{ transform: `scale(${zoomScale})` }">
+            <div class="slide-stage" :style="{ transform: 'scale(' + zoomScale + ')' }">
               <div
                 v-for="(s, i) in store.slides"
                 :key="s.id"
@@ -876,10 +1084,10 @@ onBeforeUnmount(() => {
                       v-if="regionDraft && regionSlideIndex === i"
                       class="region-selection-box"
                       :style="{
-                        left: `${regionDraft.x * 100}%`,
-                        top: `${regionDraft.y * 100}%`,
-                        width: `${regionDraft.width * 100}%`,
-                        height: `${regionDraft.height * 100}%`,
+                        left: regionDraft.x * 100 + '%',
+                        top: regionDraft.y * 100 + '%',
+                        width: regionDraft.width * 100 + '%',
+                        height: regionDraft.height * 100 + '%',
                       }"
                     />
                   </div>
@@ -900,12 +1108,12 @@ onBeforeUnmount(() => {
           :class="{ dragging: isSplitDragging && activeSplitter === 'right', disabled: rightCollapsed }"
           role="separator"
           aria-orientation="vertical"
-          aria-label="拖动调节左右栏宽度"
-          title="拖动调节左右栏宽度"
+          aria-label="拖动调整预览和功能区宽度"
+          title="拖动调整预览和功能区宽度"
           @pointerdown="startSplitDrag($event, 'right')"
         />
 
-        <!-- 右：导航、缩放与全部操作 -->
+        <!-- 右侧：功能选择与生成操作 -->
         <aside class="action-column" :class="{ collapsed: rightCollapsed }">
           <template v-if="rightCollapsed">
             <button
@@ -917,7 +1125,7 @@ onBeforeUnmount(() => {
             >
               ‹
             </button>
-            <div class="collapsed-rail-label">功能</div>
+            <div class="collapsed-rail-label">鍔熻兘</div>
           </template>
 
           <div v-else class="action-workspace">
@@ -929,18 +1137,27 @@ onBeforeUnmount(() => {
                 aria-label="收起功能面板"
                 @click="toggleRightCollapsed"
               >
-                ›
+                ‹
               </button>
               <section class="current-input-panel" aria-label="当前页输入">
                 <div class="current-input-head">
                   <p class="tool-block-title">当前页输入</p>
                   <span v-if="currentSlide" class="current-input-page">第 {{ store.currentIndex + 1 }} 页</span>
                 </div>
-                <p v-if="currentSlide?.input.topic" class="current-input-topic">{{ currentSlide.input.topic }}</p>
-                <div class="parsed-preview">{{ currentSlide?.input.body || "当前页面暂无解析文本。" }}</div>
-                <div v-if="currentSlide?.input.data_description" class="parsed-data">
-                  <span>结构化数据</span>
-                  <pre>{{ currentSlide.input.data_description }}</pre>
+                <div v-if="currentSlide" class="current-input-editor">
+                  <label class="current-field">
+                    <span>页面主题</span>
+                    <input v-model="currentSlide.input.topic" class="current-input-control" type="text" />
+                  </label>
+                  <label class="current-field">
+                    <span>正文</span>
+                    <textarea
+                      v-model="currentSlide.input.body"
+                      class="current-input-control current-input-textarea"
+                      rows="5"
+                      placeholder="当前页面暂无解析文本。"
+                    />
+                  </label>
                 </div>
               </section>
             </header>
@@ -1024,17 +1241,27 @@ onBeforeUnmount(() => {
               <section v-if="activeWorkflowStep === 'illustration'" class="tools-section workflow-panel">
                 <div class="workflow-panel-head">
                   <span class="fn-title">文生图插图</span>
+                  <button
+                    type="button"
+                    class="btn ghost compact"
+                    :disabled="currentSlide?.statusFluxImage === 'loading' || !currentSlide"
+                    @click="runIllustrationImage"
+                  >
+                    <span v-if="currentSlide?.statusFluxImage === 'loading'" class="btn-spinner wine-spin"></span>
+                    重新生成图片
+                  </button>
                 </div>
                 <IllustrationPromptPanel
                   v-if="currentSlide"
+                  ref="illustrationPanelRef"
                   v-model:slide="currentSlide.input"
                   :slide-page="currentSlide.page"
                   :doc-consistency="store.docConsistency"
                   :preview-url="currentPreviewUrl"
                   :initial-flux-image="currentSlide.fluxImage || null"
-                  @flux-result="onFluxImageResult"
-                  @flux-error="onFluxImageError"
-                  @flux-loading="onFluxImageLoading"
+                  :flux-loading="currentSlide.statusFluxImage === 'loading'"
+                  :flux-error="currentSlide.errorFluxImage || ''"
+                  @flux-generate-request="onFluxGenerateRequest"
                 />
               </section>
             </div>
@@ -1045,9 +1272,7 @@ onBeforeUnmount(() => {
       <div v-else class="function-shell">
         <header class="fn-toolbar">
           <button type="button" class="fn-back" @click="backToPreview">← 返回文档阅读</button>
-          <span class="fn-title">{{
-            functionMode === "intent" ? "图表意图" : functionMode === "code" ? "图表代码" : "文生图配图"
-          }}</span>
+          <span class="fn-title">{{ functionModeTitle }}</span>
           <span class="fn-meta">第 {{ pageLabel }} 页 · {{ currentSlide?.input.topic }}</span>
         </header>
         <div class="fn-scroll">
@@ -1071,9 +1296,9 @@ onBeforeUnmount(() => {
             :doc-consistency="store.docConsistency"
             :preview-url="currentPreviewUrl"
             :initial-flux-image="currentSlide.fluxImage || null"
-            @flux-result="onFluxImageResult"
-            @flux-error="onFluxImageError"
-            @flux-loading="onFluxImageLoading"
+            :flux-loading="currentSlide.statusFluxImage === 'loading'"
+            :flux-error="currentSlide.errorFluxImage || ''"
+            @flux-generate-request="onFluxGenerateRequest"
           />
         </div>
       </div>
@@ -1097,9 +1322,17 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   justify-content: center;
-  align-items: center;
+  align-items: flex-start;
   padding: clamp(24px, 5vw, 56px);
   background: var(--color-bg);
+  overflow-y: auto;
+}
+
+.upload-stack {
+  width: min(var(--panel-max-width), 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
 }
 
 .upload-card {
@@ -1107,7 +1340,7 @@ onBeforeUnmount(() => {
   padding: clamp(28px, 5vw, 48px);
   border-radius: var(--radius-card);
   border: 1px solid var(--color-border);
-  width: min(var(--panel-max-width), 100%);
+  width: 100%;
   text-align: center;
   box-shadow: var(--shadow-card);
   animation: panel-in var(--motion-slow) var(--motion-ease) both;
@@ -1168,8 +1401,39 @@ onBeforeUnmount(() => {
   color: var(--color-text-soft);
 }
 
-.icon {
-  font-size: 48px;
+.file-glyph {
+  position: relative;
+  width: 54px;
+  height: 66px;
+  border: 2px solid var(--color-primary-border);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #fff 0%, var(--color-primary-soft) 100%);
+  box-shadow: 0 10px 22px rgba(139, 41, 66, 0.08);
+}
+
+.file-glyph::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 18px;
+  height: 18px;
+  border-left: 2px solid var(--color-primary-border);
+  border-bottom: 2px solid var(--color-primary-border);
+  border-radius: 0 8px 0 6px;
+  background: var(--color-surface);
+}
+
+.file-glyph::after {
+  content: "";
+  position: absolute;
+  left: 13px;
+  right: 13px;
+  top: 32px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  box-shadow: 0 10px 0 var(--color-primary-border);
 }
 
 .loader {
@@ -1204,6 +1468,121 @@ onBeforeUnmount(() => {
   margin-top: 16px;
   color: var(--color-primary);
   font-size: 14px;
+}
+
+.recent-files-card {
+  width: 100%;
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.recent-files-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.section-kicker {
+  margin: 0 0 4px;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recent-files-head h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--color-text);
+}
+
+.recent-refresh {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.recent-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.recent-list {
+  display: grid;
+  gap: 10px;
+}
+
+.recent-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-base), background var(--motion-base), transform var(--motion-base);
+}
+
+.recent-file-item:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+  transform: translateY(-1px);
+}
+
+.recent-file-item:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.recent-file-main {
+  min-width: 0;
+}
+
+.recent-file-main b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.recent-file-main small {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.recent-file-action {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.recent-empty {
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-muted);
+  font-size: 13px;
+  text-align: center;
 }
 
 .work-full {
@@ -1276,7 +1655,7 @@ onBeforeUnmount(() => {
   background: var(--color-surface);
 }
 
-/* ============ 左边栏 hover 抽屉模式 ============ */
+/* ============ 左侧栏 hover 抽屉模式 ============ */
 .page-control-column--hover {
   position: absolute !important;
   left: 0;
@@ -1284,7 +1663,7 @@ onBeforeUnmount(() => {
   height: 100%;
   z-index: 30;
   width: 320px;
-  transform: translateX(calc(-100% + 32px));
+  transform: translateX(calc(-100% + 34px));
   transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.12);
   border-right: 1px solid var(--color-border);
@@ -1298,7 +1677,7 @@ onBeforeUnmount(() => {
 
 .page-control-column--hover .tools-fixed {
   display: flex !important;
-  padding: 0 var(--space-3) var(--space-3);
+  padding: 0 10px 10px;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1318,8 +1697,8 @@ onBeforeUnmount(() => {
 
 .page-control-column--hover .hover-rail-label {
   position: absolute;
-  right: 6px;
-  top: 58px;
+  right: 10px;
+  top: 48px;
   writing-mode: vertical-rl;
   color: var(--color-primary);
   font-size: 12px;
@@ -1336,22 +1715,31 @@ onBeforeUnmount(() => {
 
 .page-control-column--hover .collapse-toggle {
   position: absolute;
-  right: 0;
-  top: 12px;
+  right: 4px;
+  top: 18px;
   z-index: 31;
-  width: 32px;
-  height: 36px;
-  min-height: 36px;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
   margin: 0;
-  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  border-radius: 8px;
   opacity: 1;
-  box-shadow: none;
+  font-size: 14px;
+  box-shadow: 0 8px 20px rgba(139, 41, 66, 0.08);
   transition: background var(--motion-base), color var(--motion-base), border-color var(--motion-base);
 }
 
-.page-control-column--hover:hover .collapse-toggle {
-  right: -32px;
-  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+.page-control-column--hover:hover .collapse-toggle,
+.page-control-column--hover.page-control-column--open .collapse-toggle {
+  top: 32px;
+  right: 34px;
+  border-radius: 8px;
+}
+
+.page-control-column--hover.page-control-column--pinned .collapse-toggle {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
 }
 
 /* ============ 连续阅读模式 ============ */
@@ -1367,11 +1755,17 @@ onBeforeUnmount(() => {
   align-items: flex-start;
 }
 
-.selection-trigger {
+.reader-actions {
   position: absolute;
   top: 14px;
   right: 48px;
   z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reader-action-btn {
   width: auto;
   min-width: 78px;
   height: 38px;
@@ -1386,11 +1780,15 @@ onBeforeUnmount(() => {
   transition: background var(--motion-base), color var(--motion-base), transform var(--motion-base);
 }
 
-.selection-trigger:hover,
+.reader-action-btn:hover,
 .selection-trigger.active {
   background: var(--color-primary);
   color: #fff;
   transform: translateY(-1px);
+}
+
+.exit-editor-btn {
+  color: var(--color-text-soft);
 }
 
 .selection-popover {
@@ -1593,13 +1991,13 @@ onBeforeUnmount(() => {
 }
 
 .collapse-toggle--compact {
-  width: 22px;
-  height: 22px;
-  min-height: 22px;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
   margin: 0;
-  font-size: 13px;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(139, 41, 66, 0.1);
+  font-size: 14px;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(139, 41, 66, 0.08);
 }
 
 .action-column.collapsed .collapse-toggle--compact {
@@ -1770,6 +2168,8 @@ onBeforeUnmount(() => {
 
 .page-control-block {
   overflow: visible;
+  padding: 8px;
+  margin-top: 24px;
 }
 
 .page-navigation-block {
@@ -1789,7 +2189,7 @@ onBeforeUnmount(() => {
 }
 
 .tool-block-title {
-  margin: 0 0 var(--space-2);
+  margin: 0 0 6px;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.06em;
@@ -1808,18 +2208,20 @@ onBeforeUnmount(() => {
 
 .page-control-column .preview-toolbar {
   align-items: stretch;
+  gap: 7px;
 }
 
 .tb-left {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
   flex: 1 1 100%;
+  padding-right: 0;
 }
 
 .tb-doc {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--color-text);
   white-space: nowrap;
@@ -1829,7 +2231,7 @@ onBeforeUnmount(() => {
 }
 
 .tb-status {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--color-muted);
 }
@@ -1837,14 +2239,14 @@ onBeforeUnmount(() => {
 .tb-center {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 1 1 100%;
   min-width: 0;
 }
 
 .tb-page {
   flex: 1 1 auto;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--color-text-soft);
   min-width: 0;
@@ -1853,9 +2255,9 @@ onBeforeUnmount(() => {
 }
 
 .tb-icon {
-  width: var(--control-sm);
-  height: var(--control-sm);
-  min-height: var(--control-sm);
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
   border-radius: var(--radius-control);
   border: 1px solid var(--color-primary-border);
   background: var(--color-surface);
@@ -1882,6 +2284,49 @@ onBeforeUnmount(() => {
   gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.tb-zoom-range {
+  flex: 1 1 auto;
+  min-width: 76px;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.tb-zoom-input-wrap {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 30px;
+  min-width: 66px;
+  padding: 0 7px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tb-zoom-input {
+  width: 34px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.tb-zoom-input::-webkit-outer-spin-button,
+.tb-zoom-input::-webkit-inner-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .tb-zoom-btn {
@@ -1921,8 +2366,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   flex: 1 1 100%;
-  min-height: var(--control-sm);
-  padding: 0 12px;
+  min-height: 30px;
+  padding: 0 10px;
   border-radius: var(--radius-control);
   border: 1px solid var(--color-primary-border);
   background: var(--color-surface);
@@ -2194,11 +2639,11 @@ onBeforeUnmount(() => {
 .current-input-panel {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 14px 16px;
   border: 1px solid var(--color-primary-border);
   border-radius: var(--radius-card);
-  background: var(--color-primary-soft);
-  box-shadow: none;
+  background: linear-gradient(180deg, rgba(255, 250, 251, 0.96), rgba(255, 255, 255, 0.94));
+  box-shadow: 0 8px 22px rgba(139, 41, 66, 0.08);
 }
 
 .current-input-head {
@@ -2225,36 +2670,49 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
-.current-input-topic {
-  margin: 0 0 6px;
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1.35;
-  color: var(--color-text);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.current-input-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.current-input-panel .parsed-preview {
-  max-height: 56px;
-  padding: 6px 8px;
-  font-size: 12px;
-  line-height: 1.45;
-  border-color: var(--color-primary-border);
-  background: rgba(255, 255, 255, 0.85);
+.current-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
 }
 
-.current-input-panel .parsed-data {
-  margin-top: 6px;
-  padding: 6px 8px;
-  max-height: 48px;
-  overflow: auto;
-}
-
-.current-input-panel .parsed-data pre {
+.current-field span {
+  color: var(--color-muted);
   font-size: 11px;
+  font-weight: 800;
+}
+
+.current-input-control {
+  width: 100%;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
+}
+
+.current-input-control:focus {
+  border-color: var(--color-primary);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 3px rgba(139, 41, 66, 0.1);
+}
+
+.current-input-textarea {
+  min-height: 132px;
+  max-height: 260px;
+  resize: vertical;
 }
 
 .module-switcher {

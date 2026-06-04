@@ -34,16 +34,6 @@ const slide = defineModel<SlideRequest>({ required: true });
       </div>
     </template>
 
-    <div v-if="variant === 'chart'" class="f">
-      <label>结构化数据（可选）</label>
-      <textarea
-        v-model="slide.data_description"
-        class="ta dim"
-        rows="3"
-        placeholder="实体：指标 数值；多实体用分号分隔"
-      />
-    </div>
-
     <div v-if="variant === 'full' || variant === 'meta' || variant === 'chart'" class="row2">
       <div class="f tight">
         <label>幻灯片类型</label>
@@ -61,6 +51,16 @@ const slide = defineModel<SlideRequest>({ required: true });
           <option value="deepseek">DeepSeek</option>
         </select>
       </div>
+    </div>
+
+    <div v-if="variant === 'chart'" class="f">
+      <label>结构化数据（可选）</label>
+      <textarea
+        v-model="slide.data_description"
+        class="ta dim"
+        rows="3"
+        placeholder="实体：指标 数值；多实体用分号分隔"
+      />
     </div>
   </div>
 </template>

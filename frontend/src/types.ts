@@ -62,6 +62,7 @@ export interface ExtractTextResponse {
   title: string;
   pages: number;
   pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
+  file_id: number;
 }
 
 export interface UserDTO {
@@ -91,6 +92,24 @@ export interface UploadedFileDTO {
   error_message: string;
   created_at: string;
   deleted_at?: string | null;
+}
+
+export interface FileRecord {
+  id: number;
+  user_id: number;
+  original_filename: string;
+  mime_type: string;
+  file_size: number;
+  pages: number;
+  parse_status: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FileDetail extends FileRecord {
+  extracted_text: string;
+  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
 }
 
 export interface UsageLogDTO {
@@ -203,12 +222,36 @@ export interface VizLabIllustrationResponse {
   experiment: Record<string, any>;
 }
 
+export interface FluxGenerateImagePayload {
+  selected_text: string;
+  topic?: string;
+  prompt?: string;
+  slide_page?: number;
+  use_doc_style?: boolean;
+  use_entity_sync?: boolean;
+  doc_consistency?: AnalyzeDocumentResponse | null;
+  preview_path?: string | null;
+  aspect_ratio?: string;
+  model?: string;
+  prompt_extend?: boolean;
+  extra_style_words?: string | null;
+}
+
+export interface FluxImageJob {
+  status: "loading" | "success" | "error";
+  startedAt: number;
+  requestKey: string;
+}
+
 export interface ImageQualityDimensionScore {
   key: string;
   label: string;
   score: number;
+  maxScore?: number;
+  deducted?: number;
   weight: number;
   detail: string;
+  deductionReason?: string;
 }
 
 export interface ImageQualityEvaluation {

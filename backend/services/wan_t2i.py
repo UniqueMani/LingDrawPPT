@@ -26,8 +26,8 @@ ASPECT_TO_SIZE: Dict[str, str] = {
 }
 
 DEFAULT_NEGATIVE_PROMPT = (
-    "低分辨率，低画质，畸形，多余手指，画面过饱和，蜡像感，"
-    "模糊文字，扭曲文字，可读文字，水印，Logo，商标"
+    "低分辨率，低画质，畸形，画面过饱和，蜡像感，"
+    "乱码文字，扭曲文字，无关文字，水印，Logo，商标"
 )
 
 
@@ -37,9 +37,7 @@ class WanT2iError(Exception):
 
 def _require_api_key() -> None:
     if not DASHSCOPE_API_KEY:
-        raise WanT2iError(
-            "未配置 DASHSCOPE_API_KEY，请在仓库根目录 .env 填写阿里云百炼 API Key"
-        )
+        raise WanT2iError("未配置 DASHSCOPE_API_KEY，请在仓库根目录 .env 填写阿里云百炼 API Key")
 
 
 def _base_url() -> str:
@@ -67,9 +65,10 @@ def build_wan_prompt(
         raise WanT2iError("请先框选文字或填写正文后再生成图片")
 
     parts = [
-        "为PPT幻灯片生成一张现代扁平矢量风格的信息图插图。",
+        "为 PPT 幻灯片生成一张现代扁平矢量风格的信息图插图。",
         f"主题与内容：{base}。",
-        "风格：简洁布局、柔和渐变、专业信息图，画面中不要出现可读文字、不要出现品牌Logo。",
+        "风格：简洁布局、柔和渐变、专业信息图；避免无关文字、乱码、水印和品牌 Logo；"
+        "如画面需要标题、年份、数值等信息，必须清晰准确并服务主题。",
     ]
     extra = extra_style.strip()
     if extra:
@@ -284,9 +283,7 @@ async def _poll_task(task_id: str, *, model: str) -> Dict[str, Any]:
                 "mode": "generate",
             }
         if status == "FAILED":
-            raise WanT2iError(
-                str(output.get("message") or output.get("code") or "图像生成失败")
-            )
+            raise WanT2iError(str(output.get("message") or output.get("code") or "图像生成失败"))
         if status == "UNKNOWN":
             raise WanT2iError("任务不存在或已过期，请重新生成")
         raise WanT2iError(f"未知任务状态: {status or output}")

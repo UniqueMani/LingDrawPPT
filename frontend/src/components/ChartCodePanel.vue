@@ -247,15 +247,17 @@ onBeforeUnmount(() => {
     <div class="panel">
       <h2>{{ hideSlideInput ? "图表生成配置" : "输入与 Prompt 约束" }}</h2>
       <SlideInputForm v-model="slide" :variant="hideSlideInput ? 'chart' : 'full'" />
-      <div class="targets">
-        <span class="tl">输出形态</span>
-        <label><input v-model="tgtEcharts" type="checkbox" /> ECharts JSON</label>
-        <label><input v-model="tgtChartjs" type="checkbox" /> Chart.js JSON</label>
-        <label><input v-model="tgtMermaid" type="checkbox" /> Mermaid</label>
-      </div>
       <div class="f">
         <label class="tl">附加约束（写入 LLM）</label>
         <textarea v-model="instructions" class="ta" rows="3" />
+      </div>
+      <div class="targets">
+        <span class="tl">输出形态</span>
+        <div class="target-options">
+          <label><input v-model="tgtEcharts" type="checkbox" /> ECharts JSON</label>
+          <label><input v-model="tgtChartjs" type="checkbox" /> Chart.js JSON</label>
+          <label><input v-model="tgtMermaid" type="checkbox" /> Mermaid</label>
+        </div>
       </div>
       <button
         class="btn"
@@ -347,41 +349,50 @@ onBeforeUnmount(() => {
 }
 .targets {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+}
+.target-options {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3) var(--space-5);
-  margin: var(--space-4) 0;
   font-size: 14px;
 }
-.targets label {
+.target-options label {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--control-sm);
-  padding: 0 10px;
+  min-height: var(--control-lg);
+  padding: 0 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
-  background: var(--color-bg);
+  background: var(--color-surface);
   color: var(--color-text-soft);
   font-weight: 700;
 }
 .tl {
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--color-muted);
-  margin-right: 4px;
 }
 .f {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
 .ta {
   border: 1px solid var(--color-primary-border);
   border-radius: var(--radius-control);
   min-height: var(--control-lg);
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 14px;
   font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
 }
 .ta:focus {
   border-color: var(--color-primary);

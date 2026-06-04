@@ -5,6 +5,8 @@ import type {
   AdminUserDTO,
   AuthResponse,
   ExtractTextResponse,
+  FileDetail,
+  FileRecord,
   IllustrationStrategyResponse,
   OCRRegionRequest,
   OCRRegionResponse,
@@ -18,6 +20,7 @@ import type {
   VizLabIllustrationResponse,
   VizLabIntentResponse,
   AnalyzeDocumentResponse,
+  FluxGenerateImagePayload,
   FluxGenerateImageResponse,
 } from "../types";
 
@@ -40,6 +43,17 @@ async function postJSON<T>(url: string, payload: unknown): Promise<T> {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as T;
+}
+
+async function getJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
   });
   if (!res.ok) {
     const t = await res.text();
@@ -104,20 +118,7 @@ export async function analyzeDocumentConsistency(
 
 export async function fluxGenerateImage(
   baseUrl: string,
-  payload: {
-    selected_text: string;
-    topic?: string;
-    prompt?: string;
-    slide_page?: number;
-    use_doc_style?: boolean;
-    use_entity_sync?: boolean;
-    doc_consistency?: AnalyzeDocumentResponse | null;
-    preview_path?: string | null;
-    aspect_ratio?: string;
-    model?: string;
-    prompt_extend?: boolean;
-    extra_style_words?: string | null;
-  }
+  payload: FluxGenerateImagePayload
 ) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
@@ -147,6 +148,51 @@ export async function extractText(baseUrl: string, file: File) {
     throw new Error(`HTTP ${res.status}: ${t}`);
   }
   return (await res.json()) as ExtractTextResponse;
+}
+
+export async function listFiles(baseUrl: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await getJSON<FileRecord[]>(`${b}/api/files`);
+}
+
+export async function getFileDetail(baseUrl: string, fileId: number) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await getJSON<FileDetail>(`${b}/api/files/${fileId}`);
+}
+
+export async function deleteFile(baseUrl: string, fileId: number) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const res = await fetch(`${b}/api/files/${fileId}`, {
+    method: "DELETE",
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as { ok: boolean; deleted_id: number };
+}
+
+export async function downloadFile(baseUrl: string, fileId: number, filename: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const res = await fetch(`${b}/api/files/${fileId}/download`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 export async function ocrRegion(baseUrl: string, payload: OCRRegionRequest) {

@@ -57,6 +57,25 @@ class ExtractTextResponse(BaseModel):
     title: str = ""
     pages: int = 0
     pages_detail: List[Dict[str, Any]] = Field(default_factory=list)
+    file_id: int = 0
+
+
+class FileRecordDTO(BaseModel):
+    id: int
+    user_id: int
+    original_filename: str
+    mime_type: str = ""
+    file_size: int = 0
+    pages: int = 0
+    parse_status: str = "processing"
+    error_message: str = ""
+    created_at: str
+    updated_at: str
+
+
+class FileDetailDTO(FileRecordDTO):
+    extracted_text: str = ""
+    pages_detail: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class OCRRegionRequest(BaseModel):
@@ -321,8 +340,11 @@ class ImageQualityDimensionScore(BaseModel):
     key: str
     label: str
     score: float
+    maxScore: float = 100.0
+    deducted: float = 0.0
     weight: float
     detail: str
+    deductionReason: str = ""
 
 
 class ImageQualityEvaluation(BaseModel):

@@ -24,6 +24,8 @@ function isAdminTabActive(tab: string) {
 function logout() {
   store.setToken("");
   store.currentUser = null;
+  store.files = [];
+  store.currentFileId = 0;
   setAuthToken("");
   store.addLog("用户已退出登录");
   router.push("/home");
@@ -34,10 +36,11 @@ onMounted(async () => {
     try {
       setAuthToken(store.token);
       store.currentUser = await me(store.baseUrl);
+      await store.fetchFiles();
       store.addLog(`欢迎回来，${store.currentUser.username}`);
       if (router.currentRoute.value.meta.requiresAdmin && !store.currentUser.is_admin) {
         router.push("/home");
-      } else if (store.currentUser.is_admin && ["/home", "/workspace"].includes(router.currentRoute.value.path)) {
+      } else if (store.currentUser.is_admin && ["/home", "/workspace", "/files"].includes(router.currentRoute.value.path)) {
         router.push("/admin");
       }
     } catch {
@@ -70,8 +73,9 @@ onMounted(async () => {
           </router-link>
         </template>
         <template v-else>
-          <span class="nav-group">流程</span>
+          <span class="nav-group">工作流</span>
           <router-link to="/home" class="nav-item">总览</router-link>
+          <router-link to="/files" class="nav-item">我的文件</router-link>
           <router-link to="/workspace" class="nav-item">工作台</router-link>
         </template>
       </nav>

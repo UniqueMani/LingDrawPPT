@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { analyzeDocumentConsistency, fluxGenerateImage } from "../api/client";
+import { analyzeDocumentConsistency } from "../api/client";
 import { store } from "../store";
-import SlideInputForm from "./SlideInputForm.vue";
-import type { AnalyzeDocumentResponse, FluxGenerateImageResponse, SlideRequest } from "../types";
+import type {
+  AnalyzeDocumentResponse,
+  FluxGenerateImagePayload,
+  FluxGenerateImageResponse,
+  SlideRequest,
+} from "../types";
 
 const slide = defineModel<SlideRequest>("slide", { required: true });
 const props = defineProps<{
@@ -11,11 +15,11 @@ const props = defineProps<{
   docConsistency?: AnalyzeDocumentResponse | null;
   previewUrl?: string;
   initialFluxImage?: FluxGenerateImageResponse | null;
+  fluxLoading?: boolean;
+  fluxError?: string;
 }>();
 const emit = defineEmits<{
-  fluxResult: [result: FluxGenerateImageResponse];
-  fluxError: [message: string];
-  fluxLoading: [loading: boolean];
+  fluxGenerateRequest: [payload: FluxGenerateImagePayload];
 }>();
 
 const extraStyleWords = ref("");
@@ -26,13 +30,43 @@ const useDocStyle = ref(true);
 const useEntitySync = ref(true);
 const docAnalyzing = ref(false);
 
-const fluxLoading = ref(false);
 const fluxErr = ref("");
-const fluxResult = ref<FluxGenerateImageResponse | null>(null);
 
-const displayFluxImage = computed(() => fluxResult.value || props.initialFluxImage || null);
+const displayFluxImage = computed(() => props.initialFluxImage || null);
+const displayFluxImageUrl = computed(() => displayFluxImage.value?.resultImageUrl || "");
+const displayFluxAttempts = computed(() => displayFluxImage.value?.attempts || 0);
+const displayFluxEvaluation = computed(() => displayFluxImage.value?.evaluation || null);
+const displayFluxScore = computed(() => displayFluxEvaluation.value?.totalScore ?? 0);
+const displayFluxThreshold = computed(() => displayFluxEvaluation.value?.passThreshold ?? 72);
+const displayFluxPassed = computed(() => Boolean(displayFluxEvaluation.value?.passed));
+const displayFluxFeedback = computed(() => displayFluxEvaluation.value?.feedback || "");
+const displayFluxDimensions = computed(() => displayFluxEvaluation.value?.dimensions || []);
+const hasFluxEvaluation = computed(() => Boolean(displayFluxEvaluation.value));
+const displayFluxError = computed(() => fluxErr.value || props.fluxError || "");
+const isFluxLoading = computed(() => Boolean(props.fluxLoading));
 const selectedText = computed(() => slide.value.body?.trim() || "");
 const canGenerateFlux = computed(() => Boolean(selectedText.value || slide.value.topic?.trim()));
+const fluxScoreRows = computed(() =>
+  displayFluxDimensions.value.map((item) => {
+    const maxScore = item.maxScore || 100;
+    const score = Math.max(0, Math.min(maxScore, Number(item.score) || 0));
+    const deducted = item.deducted ?? Math.max(0, maxScore - score);
+    const percent = maxScore > 0 ? Math.max(0, Math.min(100, (score / maxScore) * 100)) : 0;
+    return {
+      ...item,
+      maxScore,
+      score,
+      deducted,
+      percent,
+      tone: scoreTone(score),
+      deductionReason:
+        item.deductionReason ||
+        (deducted > 0.5
+          ? `扣 ${deducted.toFixed(0)} 分：${item.detail || "该维度仍有优化空间。"}`
+          : "未明显扣分。"),
+    };
+  })
+);
 
 const docProfile = computed(() => props.docConsistency || store.docConsistency || null);
 
@@ -53,8 +87,8 @@ const aspectRatioOptions = [
   { value: "16:9", label: "16:9 宽屏" },
   { value: "4:3", label: "4:3 标准" },
   { value: "1:1", label: "1:1 方形" },
-  { value: "9:16", label: "9:16 竖屏" },
-  { value: "21:9", label: "21:9 超宽" },
+  { value: "9:16", label: "9:16 绔栧睆" },
+  { value: "21:9", label: "21:9 瓒呭" },
 ];
 
 function previewPathFromUrl(url?: string) {
@@ -96,39 +130,29 @@ async function rerunDocAnalysis() {
   }
 }
 
-async function runFluxGenerate() {
+function runFluxGenerate() {
   if (!canGenerateFlux.value) {
     fluxErr.value = "请先在预览区框选文字并写入正文，或填写页面主题。";
-    emit("fluxError", fluxErr.value);
     return;
   }
 
-  fluxLoading.value = true;
   fluxErr.value = "";
-  emit("fluxLoading", true);
-  try {
-    fluxResult.value = await fluxGenerateImage(store.baseUrl, {
-      selected_text: selectedText.value,
-      topic: slide.value.topic,
-      slide_page: props.slidePage || 1,
-      use_doc_style: useDocStyle.value,
-      use_entity_sync: useEntitySync.value,
-      doc_consistency: useDocStyle.value || useEntitySync.value ? docProfile.value : null,
-      preview_path: previewPathFromUrl(props.previewUrl),
-      aspect_ratio: aspectRatio.value,
-      model: wanModel.value,
-      prompt_extend: promptExtend.value,
-      extra_style_words: extraStyleWords.value.trim() || null,
-    });
-    emit("fluxResult", fluxResult.value);
-  } catch (e: any) {
-    fluxErr.value = e?.message || String(e);
-    emit("fluxError", fluxErr.value);
-  } finally {
-    fluxLoading.value = false;
-    emit("fluxLoading", false);
-  }
+  emit("fluxGenerateRequest", {
+    selected_text: selectedText.value,
+    topic: slide.value.topic,
+    slide_page: props.slidePage || 1,
+    use_doc_style: useDocStyle.value,
+    use_entity_sync: useEntitySync.value,
+    doc_consistency: useDocStyle.value || useEntitySync.value ? docProfile.value : null,
+    preview_path: previewPathFromUrl(props.previewUrl),
+    aspect_ratio: aspectRatio.value,
+    model: wanModel.value,
+    prompt_extend: promptExtend.value,
+    extra_style_words: extraStyleWords.value.trim() || null,
+  });
 }
+
+defineExpose({ runFluxGenerate });
 </script>
 
 <template>
@@ -136,19 +160,40 @@ async function runFluxGenerate() {
     <div class="panel flux-panel">
       <h2>万相文生图</h2>
 
-      <div v-if="selectedText" class="selected-preview">
-        <span class="selected-label">将用于出图的文字</span>
-        <div class="selected-text">{{ selectedText }}</div>
-      </div>
-      <p v-else class="warn">正文为空：请框选文字写入正文，或填写页面主题。</p>
+      <p v-if="!selectedText" class="warn">正文为空：请在当前页输入正文，或填写页面主题。</p>
 
-      <SlideInputForm v-model="slide" variant="meta" />
+      <div class="row2 flux-params">
+        <div class="f">
+          <label>万相模型</label>
+          <select v-model="wanModel" class="sel">
+            <option value="wan2.6-t2i">wan2.6-t2i（推荐）</option>
+            <option value="wan2.5-t2i-preview">wan2.5-t2i-preview</option>
+            <option value="wan2.2-t2i-flash">wan2.2-t2i-flash（极速）</option>
+            <option value="wan2.2-t2i-plus">wan2.2-t2i-plus（专业）</option>
+          </select>
+        </div>
+        <div class="f">
+          <label>宽高比</label>
+          <select v-model="aspectRatio" class="sel">
+            <option v-for="opt in aspectRatioOptions" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row2 checks config-checks">
+        <label class="check">
+          <input v-model="promptExtend" type="checkbox" />
+          鏅鸿兘鏀瑰啓 Prompt
+        </label>
+      </div>
 
       <div class="doc-consistency-panel">
         <div class="doc-consistency-head">
           <span class="doc-consistency-title">文档级一致性 / 多图协同</span>
           <button type="button" class="btn-link" :disabled="docAnalyzing" @click="rerunDocAnalysis">
-            {{ docAnalyzing ? "分析中…" : "重新分析文档" }}
+            {{ docAnalyzing ? "分析中..." : "重新分析文档" }}
           </button>
         </div>
         <p v-if="!docProfile" class="doc-hint">
@@ -181,81 +226,75 @@ async function runFluxGenerate() {
         </div>
       </div>
 
-      <div class="row2">
+      <div class="field-stack">
         <div class="f">
-          <label>万相模型</label>
-          <select v-model="wanModel" class="sel">
-            <option value="wan2.6-t2i">wan2.6-t2i（推荐）</option>
-            <option value="wan2.5-t2i-preview">wan2.5-t2i-preview</option>
-            <option value="wan2.2-t2i-flash">wan2.2-t2i-flash（极速）</option>
-            <option value="wan2.2-t2i-plus">wan2.2-t2i-plus（专业）</option>
-          </select>
+          <label>结构化数据（可选）</label>
+          <textarea
+            v-model="slide.data_description"
+            class="ta dim"
+            rows="3"
+            placeholder="实体、指标、数值等结构化补充；用于辅助插图 Prompt。"
+          />
         </div>
         <div class="f">
-          <label>宽高比</label>
-          <select v-model="aspectRatio" class="sel">
-            <option v-for="opt in aspectRatioOptions" :key="opt.value" :value="opt.value">
-              {{ opt.label }}
-            </option>
-          </select>
+          <label>追加风格词</label>
+          <textarea v-model="extraStyleWords" class="ta" rows="2" placeholder="如：扁平矢量、科技蓝、无文字" />
         </div>
       </div>
 
-      <div class="row2 checks">
-        <label class="check">
-          <input v-model="promptExtend" type="checkbox" />
-          智能改写 Prompt
-        </label>
-      </div>
-
-      <div class="f">
-        <label>追加风格词</label>
-        <textarea v-model="extraStyleWords" class="ta" rows="2" placeholder="如：扁平矢量、科技蓝、无文字" />
-      </div>
-
-      <button class="btn flux-btn" type="button" :disabled="fluxLoading || !canGenerateFlux" @click="runFluxGenerate">
-        {{ fluxLoading ? "生成与质量评估中…" : "根据选中文字生成图片" }}
+      <button class="btn flux-btn" type="button" :disabled="isFluxLoading || !canGenerateFlux" @click="runFluxGenerate">
+        {{ isFluxLoading ? "生成与质量评估中..." : "根据选中文字生成图片" }}
       </button>
-      <p v-if="fluxErr" class="err">{{ fluxErr }}</p>
+      <p v-if="displayFluxError" class="err">{{ displayFluxError }}</p>
 
-      <div v-if="displayFluxImage" class="flux-result">
+      <div v-if="displayFluxImageUrl" class="flux-result">
         <div class="pill-row">
           <span class="pill">文生图</span>
-          <span v-if="displayFluxImage.attempts && displayFluxImage.attempts > 1" class="pill muted">
-            共 {{ displayFluxImage.attempts }} 轮生成（质量未达标时自动重试）
+          <span v-if="displayFluxAttempts > 1" class="pill muted">
+            共 {{ displayFluxAttempts }} 轮生成
           </span>
           <span
-            v-if="displayFluxImage.evaluation"
+            v-if="hasFluxEvaluation"
             class="pill"
-            :class="displayFluxImage.evaluation.passed ? 'pill-pass' : 'pill-warn'"
+            :class="displayFluxPassed ? 'pill-pass' : 'pill-warn'"
           >
-            质量 {{ displayFluxImage.evaluation.totalScore.toFixed(0) }} 分
-            {{ displayFluxImage.evaluation.passed ? "· 通过" : "· 未达标" }}
+            质量 {{ displayFluxScore.toFixed(0) }} 分
+            {{ displayFluxPassed ? "· 通过" : "· 未达标" }}
           </span>
         </div>
 
         <img
           class="flux-img"
-          :src="displayFluxImage.resultImageUrl"
+          :src="displayFluxImageUrl"
           alt="万相生成配图"
           title="点击在新标签页查看大图"
-          @click="openFluxImage(displayFluxImage.resultImageUrl)"
+          @click="openFluxImage(displayFluxImageUrl)"
         />
-        <a class="link" :href="displayFluxImage.resultImageUrl" target="_blank" rel="noopener noreferrer">在新标签页打开</a>
+        <a class="link" :href="displayFluxImageUrl" target="_blank" rel="noopener noreferrer">点击下载</a>
 
-        <div v-if="displayFluxImage.evaluation" class="eval-panel">
-          <p class="eval-feedback">{{ displayFluxImage.evaluation.feedback }}</p>
-          <div
-            v-for="dim in displayFluxImage.evaluation.dimensions"
-            :key="dim.key"
-            class="eval-row"
-          >
-            <div class="eval-meta">
-              <span class="eval-label">{{ dim.label }}</span>
-              <span class="eval-score" :class="scoreTone(dim.score)">{{ dim.score.toFixed(0) }}</span>
+        <div v-if="hasFluxEvaluation" class="eval-panel">
+          <div class="eval-summary">
+            <div>
+              <span class="eval-kicker">质量评分</span>
+              <strong>{{ displayFluxScore.toFixed(0) }} / {{ displayFluxThreshold.toFixed(0) }}</strong>
             </div>
-            <div class="eval-bar">
-              <div class="eval-bar-fill" :class="scoreTone(dim.score)" :style="{ width: `${dim.score}%` }" />
+            <span :class="displayFluxPassed ? 'eval-status pass' : 'eval-status warn'">
+              {{ displayFluxPassed ? "通过" : "未达标" }}
+            </span>
+          </div>
+          <p v-if="displayFluxFeedback" class="eval-feedback">{{ displayFluxFeedback }}</p>
+          <div v-if="fluxScoreRows.length" class="eval-list">
+            <div v-for="item in fluxScoreRows" :key="item.key" class="eval-row">
+              <div class="eval-meta">
+                <span class="eval-label">{{ item.label }}</span>
+                <span class="eval-score" :class="item.tone">
+                  {{ item.score.toFixed(0) }} / {{ item.maxScore.toFixed(0) }}
+                </span>
+              </div>
+              <div class="eval-bar" :aria-label="`${item.label} ${item.score.toFixed(0)} 分`">
+                <div class="eval-bar-fill" :class="item.tone" :style="{ width: `${item.percent}%` }" />
+              </div>
+              <p class="eval-deduction">{{ item.deductionReason }}</p>
             </div>
           </div>
         </div>
@@ -297,10 +336,17 @@ async function runFluxGenerate() {
   display: flex;
   gap: var(--space-4);
   flex-wrap: wrap;
-  margin-bottom: var(--space-4);
+  margin-bottom: 0;
+}
+.flux-params {
+  margin-bottom: var(--space-3);
 }
 .checks {
   align-items: center;
+}
+.config-checks {
+  padding-top: 2px;
+  margin-bottom: var(--space-4);
 }
 .check {
   display: inline-flex;
@@ -389,7 +435,17 @@ async function runFluxGenerate() {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 180px;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.field-stack .f {
+  flex: 0 0 auto;
 }
 label {
   font-size: 12px;
@@ -398,6 +454,7 @@ label {
 }
 .sel,
 .ta {
+  width: 100%;
   border: 1px solid var(--color-primary-border);
   border-radius: var(--radius-control);
   min-height: var(--control-lg);
@@ -410,6 +467,9 @@ label {
   border-color: var(--color-primary);
   outline: none;
   box-shadow: var(--shadow-focus);
+}
+.ta.dim {
+  background: var(--color-primary-soft);
 }
 .sel {
   cursor: pointer;
@@ -447,30 +507,6 @@ label {
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
-}
-.selected-preview {
-  margin-bottom: var(--space-4);
-  border: 1px solid var(--color-primary-border);
-  border-radius: var(--radius-card);
-  background: var(--color-primary-soft);
-  padding: var(--space-3);
-}
-.selected-label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--color-primary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.selected-text {
-  max-height: 120px;
-  overflow: auto;
-  white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--color-text);
 }
 .flux-result {
   margin-top: var(--space-4);
@@ -531,14 +567,59 @@ label {
   border-radius: var(--radius-card);
   background: var(--color-surface);
 }
+.eval-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.eval-summary strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 18px;
+  color: var(--color-primary);
+}
+.eval-kicker {
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--color-muted);
+}
+.eval-status {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.eval-status.pass {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-border);
+}
+.eval-status.warn {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border: 1px solid #fecaca;
+}
 .eval-feedback {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-muted);
   font-size: 13px;
   color: var(--color-text-soft);
   line-height: 1.5;
 }
+.eval-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
 .eval-row + .eval-row {
-  margin-top: 10px;
+  margin-top: 0;
 }
 .eval-meta {
   display: flex;
@@ -550,12 +631,14 @@ label {
 .eval-label {
   font-weight: 700;
   color: var(--color-muted);
+  min-width: 0;
 }
 .eval-score {
   font-weight: 800;
+  white-space: nowrap;
 }
 .eval-score.good {
-  color: #047857;
+  color: var(--color-primary);
 }
 .eval-score.mid {
   color: #b45309;
@@ -564,7 +647,7 @@ label {
   color: #b91c1c;
 }
 .eval-bar {
-  height: 6px;
+  height: 8px;
   border-radius: 999px;
   background: var(--color-bg-muted);
   overflow: hidden;
@@ -574,12 +657,19 @@ label {
   border-radius: 999px;
 }
 .eval-bar-fill.good {
-  background: #10b981;
+  background: var(--color-primary);
 }
 .eval-bar-fill.mid {
   background: #f59e0b;
 }
 .eval-bar-fill.low {
   background: #ef4444;
+}
+.eval-deduction {
+  margin: 6px 0 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
 }
 </style>
