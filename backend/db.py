@@ -1,4 +1,3 @@
-import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -75,11 +74,11 @@ def init_db() -> None:
                 pages INTEGER NOT NULL DEFAULT 0,
                 parse_status TEXT NOT NULL DEFAULT 'processing',
                 error_message TEXT DEFAULT '',
-                created_at TEXT NOT NULL,
-                deleted_at TEXT,
-                pages_data TEXT DEFAULT '[]',
                 extracted_text TEXT DEFAULT '',
-                updated_at TEXT
+                pages_detail TEXT DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                deleted_at TEXT
             )
             """
         )
@@ -87,15 +86,13 @@ def init_db() -> None:
             row["name"]
             for row in conn.execute("PRAGMA table_info(uploaded_files)").fetchall()
         }
-        if "pages_data" not in file_cols:
-            conn.execute("ALTER TABLE uploaded_files ADD COLUMN pages_data TEXT DEFAULT '[]'")
         if "extracted_text" not in file_cols:
             conn.execute("ALTER TABLE uploaded_files ADD COLUMN extracted_text TEXT DEFAULT ''")
+        if "pages_detail" not in file_cols:
+            conn.execute("ALTER TABLE uploaded_files ADD COLUMN pages_detail TEXT DEFAULT '[]'")
         if "updated_at" not in file_cols:
             conn.execute("ALTER TABLE uploaded_files ADD COLUMN updated_at TEXT")
-        conn.execute(
-            "UPDATE uploaded_files SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''"
-        )
+            conn.execute("UPDATE uploaded_files SET updated_at = created_at WHERE updated_at IS NULL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS admin_audit_logs (
@@ -151,37 +148,41 @@ def create_uploaded_file(
         cur = conn.execute(
             """
             INSERT INTO uploaded_files
-                (user_id, original_filename, stored_filename, file_path, mime_type, file_size, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, original_filename, stored_filename, file_path, mime_type, file_size, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, original_filename, stored_filename, file_path, mime_type, file_size, utc_now(), utc_now()),
+            (user_id, original_filename, stored_filename, file_path, mime_type, file_size, utc_now()),
         )
         conn.commit()
         return int(cur.lastrowid)
 
 
-def update_uploaded_file(
+def update_uploaded_file(file_id: int, *, parse_status: str, pages: int = 0, error_message: str = "") -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE uploaded_files SET parse_status = ?, pages = ?, error_message = ?, updated_at = ? WHERE id = ?",
+            (parse_status, pages, error_message[:1000], utc_now(), file_id),
+        )
+        conn.commit()
+
+
+def update_uploaded_file_result(
     file_id: int,
     *,
     parse_status: str,
     pages: int = 0,
     error_message: str = "",
-    pages_data: Optional[list[dict[str, Any]]] = None,
-    extracted_text: Optional[str] = None,
+    extracted_text: str = "",
+    pages_detail: str = "[]",
 ) -> None:
-    assignments = ["parse_status = ?", "pages = ?", "error_message = ?", "updated_at = ?"]
-    args: list[Any] = [parse_status, pages, error_message[:1000], utc_now()]
-    if pages_data is not None:
-        assignments.append("pages_data = ?")
-        args.append(json.dumps(pages_data, ensure_ascii=False))
-    if extracted_text is not None:
-        assignments.append("extracted_text = ?")
-        args.append(extracted_text)
-    args.append(file_id)
     with get_conn() as conn:
         conn.execute(
-            f"UPDATE uploaded_files SET {', '.join(assignments)} WHERE id = ?",
-            args,
+            """
+            UPDATE uploaded_files
+            SET parse_status = ?, pages = ?, error_message = ?, extracted_text = ?, pages_detail = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (parse_status, pages, error_message[:1000], extracted_text, pages_detail, utc_now(), file_id),
         )
         conn.commit()
 
@@ -197,6 +198,37 @@ def get_uploaded_file(file_id: int) -> Optional[dict[str, Any]]:
             (file_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def list_user_uploaded_files(user_id: int) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, original_filename, stored_filename, file_path, mime_type,
+                   file_size, pages, parse_status, error_message, created_at,
+                   COALESCE(updated_at, created_at) AS updated_at
+            FROM uploaded_files
+            WHERE user_id = ? AND deleted_at IS NULL
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_user_uploaded_file(file_id: int, user_id: int) -> Optional[dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, user_id, original_filename, stored_filename, file_path, mime_type,
+                   file_size, pages, parse_status, error_message, extracted_text,
+                   pages_detail, created_at, COALESCE(updated_at, created_at) AS updated_at
+            FROM uploaded_files
+            WHERE id = ? AND user_id = ? AND deleted_at IS NULL
+            """,
+            (file_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def record_admin_audit(
@@ -292,35 +324,6 @@ def soft_delete_uploaded_file(file_id: int) -> bool:
         cur = conn.execute(
             "UPDATE uploaded_files SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
             (utc_now(), file_id),
-        )
-        conn.commit()
-        return cur.rowcount > 0
-
-
-def list_user_uploaded_files(user_id: int) -> list[dict[str, Any]]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, original_filename, file_size, pages, parse_status, error_message,
-                   created_at, updated_at
-            FROM uploaded_files
-            WHERE user_id = ? AND deleted_at IS NULL
-            ORDER BY id DESC
-            """,
-            (user_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def soft_delete_user_uploaded_file(file_id: int, user_id: int) -> bool:
-    with get_conn() as conn:
-        cur = conn.execute(
-            """
-            UPDATE uploaded_files
-            SET deleted_at = ?, updated_at = ?
-            WHERE id = ? AND user_id = ? AND deleted_at IS NULL
-            """,
-            (utc_now(), utc_now(), file_id, user_id),
         )
         conn.commit()
         return cur.rowcount > 0

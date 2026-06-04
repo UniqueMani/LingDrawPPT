@@ -22,15 +22,15 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
-    path: "/profile",
-    name: "Profile",
-    component: () => import("../views/ProfileView.vue"),
-    meta: { requiresAuth: true },
-  },
-  {
     path: "/files",
     name: "Files",
     component: () => import("../views/FilesView.vue"),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: "/profile",
+    name: "Profile",
+    component: () => import("../views/ProfileView.vue"),
     meta: { requiresAuth: true },
   },
   {
@@ -51,7 +51,7 @@ router.beforeEach((to, _from, next) => {
     next("/home");
   } else if (to.meta.requiresAdmin && store.currentUser && !store.currentUser.is_admin) {
     next("/home");
-  } else if (store.currentUser?.is_admin && ["/home", "/workspace", "/files"].includes(to.path)) {
+  } else if (store.currentUser?.is_admin && (to.path === "/home" || to.path === "/workspace")) {
     next("/admin");
   } else {
     next();

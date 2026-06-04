@@ -57,28 +57,12 @@ export interface OCRRegionResponse {
 }
 
 export interface ExtractTextResponse {
-  file_id: number;
   filename: string;
   text: string;
   title: string;
   pages: number;
   pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
-}
-
-export interface FileRecordDTO {
-  id: number;
-  original_filename: string;
-  file_size: number;
-  pages: number;
-  parse_status: string;
-  error_message: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FileDetailDTO extends FileRecordDTO {
-  pages_detail: ExtractTextResponse["pages_detail"];
-  extracted_text: string;
+  file_id: number;
 }
 
 export interface UserDTO {
@@ -108,6 +92,24 @@ export interface UploadedFileDTO {
   error_message: string;
   created_at: string;
   deleted_at?: string | null;
+}
+
+export interface FileRecord {
+  id: number;
+  user_id: number;
+  original_filename: string;
+  mime_type: string;
+  file_size: number;
+  pages: number;
+  parse_status: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FileDetail extends FileRecord {
+  extracted_text: string;
+  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
 }
 
 export interface UsageLogDTO {
@@ -179,6 +181,9 @@ export interface SlideState {
   intentSemantic?: Record<string, any>;
   chartCode?: VizLabChartCodeResponse;
   vizIllustration?: VizLabIllustrationResponse;
+  fluxImage?: FluxGenerateImageResponse;
+  statusFluxImage: "idle" | "loading" | "success" | "error";
+  errorFluxImage?: string;
   statusAnalyze: "idle" | "loading" | "success" | "error";
   statusIllustration: "idle" | "loading" | "success" | "error";
   errorAnalyze?: string;
@@ -215,5 +220,89 @@ export interface VizLabIllustrationResponse {
   prompt: string;
   reason: string;
   experiment: Record<string, any>;
+}
+
+export interface FluxGenerateImagePayload {
+  selected_text: string;
+  topic?: string;
+  prompt?: string;
+  slide_page?: number;
+  use_doc_style?: boolean;
+  use_entity_sync?: boolean;
+  doc_consistency?: AnalyzeDocumentResponse | null;
+  preview_path?: string | null;
+  aspect_ratio?: string;
+  model?: string;
+  prompt_extend?: boolean;
+  extra_style_words?: string | null;
+}
+
+export interface FluxImageJob {
+  status: "loading" | "success" | "error";
+  startedAt: number;
+  requestKey: string;
+}
+
+export interface ImageQualityDimensionScore {
+  key: string;
+  label: string;
+  score: number;
+  maxScore?: number;
+  deducted?: number;
+  weight: number;
+  detail: string;
+  deductionReason?: string;
+}
+
+export interface ImageQualityEvaluation {
+  passed: boolean;
+  totalScore: number;
+  passThreshold: number;
+  dimensions: ImageQualityDimensionScore[];
+  feedback: string;
+}
+
+export interface DocumentStyleProfile {
+  domain: string;
+  style_tokens: string[];
+  style_prompt_zh: string;
+  color_palette: string[];
+  negative_style: string;
+}
+
+export interface SharedEntity {
+  id: string;
+  name: string;
+  visual_anchor: string;
+  color_hint: string;
+  pages: number[];
+  frequency: number;
+}
+
+export interface SlideVisualPlan {
+  page: number;
+  topic: string;
+  slide_role: string;
+  visual_focus: string;
+  entity_ids: string[];
+}
+
+export interface AnalyzeDocumentResponse {
+  style: DocumentStyleProfile;
+  entities: SharedEntity[];
+  slide_plans: SlideVisualPlan[];
+  summary: string;
+  source: string;
+}
+
+export interface FluxGenerateImageResponse {
+  taskId: string;
+  resultImageUrl: string;
+  originImageUrl?: string | null;
+  promptUsed: string;
+  mode: string;
+  attempts?: number;
+  regenerated?: boolean;
+  evaluation?: ImageQualityEvaluation | null;
 }
 

@@ -46,9 +46,20 @@ MOCK_MODE=true
 DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com
+DASHSCOPE_API_KEY=
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com
+WAN_T2I_MODEL=wan2.6-t2i
+IMAGE_EVAL_PASS_SCORE=72
+IMAGE_GEN_MAX_ATTEMPTS=3
 APP_HOST=127.0.0.1
 APP_PORT=8000
 ```
+
+万相文生图（阿里云百炼）：
+
+- `DASHSCOPE_API_KEY`：百炼 API Key，用于 `POST /api/flux/generate-image`（接口路径保留，后端已切换万相）。
+- `DASHSCOPE_BASE_URL`：默认北京 `https://dashscope.aliyuncs.com`；新加坡用 `https://dashscope-intl.aliyuncs.com`（Key 与地域须一致）。
+- `WAN_T2I_MODEL`：默认模型，前端也可在界面选择 `wan2.6-t2i`、`wan2.5-t2i-preview` 等。
 
 模式说明：
 
@@ -117,7 +128,30 @@ http://localhost:5173
 5. 在“图表意图”步骤运行意图分析，查看 `intent`、`chartType`、`source`、`confidence`、`extracted` 等结果。
 6. 在“数据图表”步骤生成图表。主流程会生成 ECharts option 并渲染预览。
 7. 在图表代码实验面板中，可以生成 ECharts、Chart.js、Mermaid 三种表示；三个预览按纵向排列，每个图独占一行。
-8. 在“文生图插图”步骤生成关键词和 prompt，用于后续接入图片生成模型。
+8. 在「文生图插图」步骤：先在预览区框选文字并写入正文，再点击 **根据选中文字生成图片** 调用阿里云万相；也可先生成本地插图 Prompt 策略。
+
+## 万相文生图
+
+接口：`POST /api/flux/generate-image`（需登录，路径保留兼容）
+
+1. 预览区点击 **框选文字**，确认后 **写入正文框**。
+2. 进入工作流第 3 步「文生图插图」。
+3. 选择万相模型与宽高比，点击 **根据选中文字生成图片**。
+4. 默认 `wan2.6-t2i` 同步出图；其它模型异步轮询，返回 `resultImageUrl`（约 10 秒–2 分钟）。
+
+说明：万相文生图不支持「编辑当前页预览图」；该能力需图生图/图像编辑 API，当前未接入。
+
+文档级一致性 / 多图协同（文生图）：
+
+- 上传后自动 `POST /api/document/analyze-consistency`：抽取全文档 **style tokens**、**共享实体库**、每页 **slide_role**。
+- 出图时注入统一风格约束与跨页实体视觉锚点，避免「第 1 页科技蓝、第 2 页动漫、第 3 页写实」的割裂。
+- 前端「文生图插图」可开关：统一全文档风格、多图协同（共享实体库）。
+
+配图质量流水线（`Generate → Evaluate → Regenerate`）：
+
+- 生成后自动评估：语义匹配、OCR 乱字、清晰度、风格一致性、与当前页一致性。
+- 综合分默认 ≥ `72`（`IMAGE_EVAL_PASS_SCORE`）为通过；未通过则自动重生成，最多 `IMAGE_GEN_MAX_ATTEMPTS` 次（默认 3）。
+- 可选 `IMAGE_EVAL_USE_VL=true` 调用 `qwen-vl-plus` 增强语义评分。
 
 ## AI 使用阶段
 

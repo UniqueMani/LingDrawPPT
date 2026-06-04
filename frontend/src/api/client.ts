@@ -5,8 +5,8 @@ import type {
   AdminUserDTO,
   AuthResponse,
   ExtractTextResponse,
-  FileDetailDTO,
-  FileRecordDTO,
+  FileDetail,
+  FileRecord,
   IllustrationStrategyResponse,
   OCRRegionRequest,
   OCRRegionResponse,
@@ -19,6 +19,9 @@ import type {
   VizLabChartCodeResponse,
   VizLabIllustrationResponse,
   VizLabIntentResponse,
+  AnalyzeDocumentResponse,
+  FluxGenerateImagePayload,
+  FluxGenerateImageResponse,
 } from "../types";
 
 let authToken = "";
@@ -40,6 +43,17 @@ async function postJSON<T>(url: string, payload: unknown): Promise<T> {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as T;
+}
+
+async function getJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
   });
   if (!res.ok) {
     const t = await res.text();
@@ -93,6 +107,32 @@ export async function vizLabIllustration(
   return await postJSON<VizLabIllustrationResponse>(`${b}/api/viz-lab/illustration`, payload);
 }
 
+export async function analyzeDocumentConsistency(
+  baseUrl: string,
+  payload: { doc_title?: string; pages: Array<{ page: number; topic: string; body?: string }> }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<AnalyzeDocumentResponse>(`${b}/api/document/analyze-consistency`, payload);
+}
+
+export async function fluxGenerateImage(
+  baseUrl: string,
+  payload: FluxGenerateImagePayload
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const body: Record<string, unknown> = { ...payload };
+  if (payload.doc_consistency) {
+    body.doc_consistency = {
+      style: payload.doc_consistency.style,
+      entities: payload.doc_consistency.entities,
+      slide_plans: payload.doc_consistency.slide_plans,
+    };
+  }
+  return await postJSON<FluxGenerateImageResponse>(`${b}/api/flux/generate-image`, body);
+}
+
 export async function extractText(baseUrl: string, file: File) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
@@ -111,24 +151,43 @@ export async function extractText(baseUrl: string, file: File) {
 }
 
 export async function listFiles(baseUrl: string) {
-  return await adminFetch<FileRecordDTO[]>(baseUrl, "/api/files");
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await getJSON<FileRecord[]>(`${b}/api/files`);
 }
 
 export async function getFileDetail(baseUrl: string, fileId: number) {
-  return await adminFetch<FileDetailDTO>(baseUrl, `/api/files/${fileId}`);
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await getJSON<FileDetail>(`${b}/api/files/${fileId}`);
 }
 
 export async function deleteFile(baseUrl: string, fileId: number) {
-  return await adminFetch<{ ok: boolean }>(baseUrl, `/api/files/${fileId}`, { method: "DELETE" });
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const res = await fetch(`${b}/api/files/${fileId}`, {
+    method: "DELETE",
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  return (await res.json()) as { ok: boolean; deleted_id: number };
 }
 
 export async function downloadFile(baseUrl: string, fileId: number, filename: string) {
   const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
   const res = await fetch(`${b}/api/files/${fileId}/download`, {
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-  const url = URL.createObjectURL(await res.blob());
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;

@@ -10,6 +10,7 @@ const props = defineProps<{
   initialSemantic?: Record<string, any> | null;
   initialReason?: string | null;
   initialChartType?: string | null;
+  hideSlideInput?: boolean;
 }>();
 const emit = defineEmits<{
   result: [semantic: Record<string, any>];
@@ -65,15 +66,6 @@ function llmStatusLabel(item: Record<string, any>) {
   return item.llmSucceeded ? "调用成功" : "调用失败，已降级";
 }
 
-const confidenceHelp = computed(() => {
-  const item = displaySemantic.value;
-  if (!item) return "";
-  if (item.source === "fallback" || item.source === "mock" || !item.llmAttempted) {
-    return "置信度来自本地规则：综合文本特征分数、第一候选与第二候选差距，以及数据是否足够结构化；它是启发式评分，不是严格概率。";
-  }
-  return "置信度由 DeepSeek 按提示自评给出，后端只做 0 到 1 的范围校验；若触发本地补全，会在来源和降级原因中标出。";
-});
-
 async function run() {
   loading.value = true;
   err.value = "";
@@ -93,9 +85,14 @@ async function run() {
 <template>
   <div class="panel-root">
     <div class="panel">
-      <h2>输入一页内容</h2>
-      <SlideInputForm v-model="slide" />
-      <button class="btn primary" type="button" :disabled="loading || !slide.topic.trim()" @click="run">
+      <h2 v-if="!hideSlideInput">输入一页内容</h2>
+      <SlideInputForm v-model="slide" :variant="hideSlideInput ? 'meta' : 'full'" />
+      <button
+        class="btn primary"
+        type="button"
+        :disabled="loading || !(slide.topic?.trim() || slide.body?.trim())"
+        @click="run"
+      >
         {{ loading ? "分析中…" : "运行意图分析" }}
       </button>
       <p v-if="err" class="err">{{ err }}</p>
@@ -124,10 +121,6 @@ async function run() {
           >大模型状态：{{ llmStatusLabel(displaySemantic) }}</span
         >
       </div>
-      <p v-if="confidenceHelp" class="note">{{ confidenceHelp }}</p>
-      <p v-if="displaySemantic.fallbackReason" class="reason warn">
-        降级原因：{{ displaySemantic.fallbackReason }}
-      </p>
       <p v-if="displayReason" class="reason">{{ displayReason }}</p>
       <details open>
         <summary>semantic JSON（含 scores 可导出做实验）</summary>
