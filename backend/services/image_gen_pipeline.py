@@ -30,6 +30,7 @@ async def generate_evaluate_regenerate(
     aspect_ratio: str,
     model: str,
     prompt_extend: bool,
+    generation_mode: str = "standard",
     preview_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     attempts_log: List[Dict[str, Any]] = []
@@ -37,7 +38,11 @@ async def generate_evaluate_regenerate(
     last_result: Optional[Dict[str, Any]] = None
     last_eval: Optional[ImageQualityReport] = None
 
-    max_attempts = max(1, IMAGE_GEN_MAX_ATTEMPTS)
+    normalized_mode = (generation_mode or "standard").strip().lower()
+    if normalized_mode == "fast":
+        max_attempts = 1
+    else:
+        max_attempts = min(3, max(1, IMAGE_GEN_MAX_ATTEMPTS))
 
     for attempt in range(1, max_attempts + 1):
         logger.info("Image pipeline attempt %s/%s", attempt, max_attempts)

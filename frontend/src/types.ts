@@ -226,6 +226,7 @@ export interface FluxGenerateImagePayload {
   selected_text: string;
   topic?: string;
   prompt?: string;
+  generation_mode?: "standard" | "fast";
   slide_page?: number;
   use_doc_style?: boolean;
   use_entity_sync?: boolean;

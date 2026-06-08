@@ -78,6 +78,7 @@ async def flux_generate_image(
             aspect_ratio=body.aspect_ratio,
             model=body.model,
             prompt_extend=prompt_extend,
+            generation_mode=body.generation_mode,
             preview_path=body.preview_path,
         )
 

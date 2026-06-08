@@ -313,6 +313,7 @@ class FluxGenerateImageRequest(BaseModel):
     selected_text: str = Field("", description="框选或写入的正文，用于构建出图 prompt")
     topic: Optional[str] = Field(None, description="页面标题，selected_text 为空时作为备选")
     prompt: str = Field("", description="直接指定 prompt（通常留空，由 selected_text 构建）")
+    generation_mode: str = Field("standard", description="生成模式：standard 通用模式最多 3 次；fast 极速模式只生成 1 次")
     slide_page: int = Field(1, description="当前幻灯片页码，用于多图协同")
     use_doc_style: bool = Field(True, description="启用文档级统一风格约束")
     use_entity_sync: bool = Field(True, description="启用共享实体库跨页一致")

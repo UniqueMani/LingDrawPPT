@@ -25,6 +25,7 @@ const emit = defineEmits<{
 const extraStyleWords = ref("");
 const wanModel = ref("wan2.6-t2i");
 const aspectRatio = ref("16:9");
+const generationMode = ref<"standard" | "fast">("standard");
 const promptExtend = ref(true);
 const useDocStyle = ref(true);
 const useEntitySync = ref(true);
@@ -147,6 +148,7 @@ function runFluxGenerate() {
     preview_path: previewPathFromUrl(props.previewUrl),
     aspect_ratio: aspectRatio.value,
     model: wanModel.value,
+    generation_mode: generationMode.value,
     prompt_extend: promptExtend.value,
     extra_style_words: extraStyleWords.value.trim() || null,
   });
@@ -180,6 +182,27 @@ defineExpose({ runFluxGenerate });
             </option>
           </select>
         </div>
+      </div>
+
+      <div class="mode-segment" aria-label="文生图生成模式">
+        <button
+          type="button"
+          class="mode-option"
+          :class="{ active: generationMode === 'standard' }"
+          @click="generationMode = 'standard'"
+        >
+          <strong>通用模式</strong>
+          <span>最多 3 次，质量不达标时自动重试</span>
+        </button>
+        <button
+          type="button"
+          class="mode-option"
+          :class="{ active: generationMode === 'fast' }"
+          @click="generationMode = 'fast'"
+        >
+          <strong>极速模式</strong>
+          <span>只生成 1 次，并直接输出质量评估</span>
+        </button>
       </div>
 
       <div class="row2 checks config-checks">
@@ -340,6 +363,42 @@ defineExpose({ runFluxGenerate });
 }
 .flux-params {
   margin-bottom: var(--space-3);
+}
+.mode-segment {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: var(--space-4);
+}
+.mode-option {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-base), background var(--motion-base), box-shadow var(--motion-base);
+}
+.mode-option strong,
+.mode-option span {
+  display: block;
+}
+.mode-option strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+.mode-option span {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-muted);
+}
+.mode-option.active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+  box-shadow: 0 0 0 3px rgba(139, 41, 66, 0.1);
 }
 .checks {
   align-items: center;
