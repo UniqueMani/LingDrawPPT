@@ -19,9 +19,11 @@ const props = defineProps<{
   initialChartType?: string | null;
   initialReason?: string | null;
   hideSlideInput?: boolean;
+  externalLoading?: boolean;
 }>();
 const emit = defineEmits<{
   result: [result: VizLabChartCodeResponse];
+  loadingChange: [loading: boolean];
 }>();
 
 const tgtEcharts = ref(true);
@@ -32,6 +34,7 @@ const instructions = ref(
 );
 
 const loading = ref(false);
+const isBusy = computed(() => loading.value || props.externalLoading);
 const err = ref("");
 const result = ref<VizLabChartCodeResponse | null>(null);
 const displayResult = computed(() => result.value || props.initialResult || null);
@@ -39,6 +42,24 @@ const displayEchartsOption = computed(() =>
   displayResult.value ? displayResult.value.echartsOption || null : props.initialEchartsOption || null
 );
 const hasDisplayResult = computed(() => Boolean(displayResult.value || displayEchartsOption.value));
+const chartSummaryItems = computed(() => {
+  const resultItem = displayResult.value;
+  return [
+    props.initialChartType ? { label: "图表类型", value: labelOf(chartTypeLabels, props.initialChartType) } : null,
+    resultItem?.generatedTargets?.length ? { label: "输出形态", value: targetLabelList(resultItem.generatedTargets) } : null,
+    resultItem?.source ? { label: "生成方式", value: labelOf(sourceLabels, resultItem.source) } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+});
+const chartRunDetailItems = computed(() => {
+  const resultItem = displayResult.value;
+  if (!resultItem) return [];
+  return [
+    props.initialIntent ? { label: "意图", value: labelOf(intentLabels, props.initialIntent) } : null,
+    resultItem.llmAttempted != null ? { label: "大模型状态", value: llmStatusLabel(resultItem) } : null,
+    resultItem.fallbackReason ? { label: "降级标记", value: resultItem.fallbackReason } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+});
+const fallbackExplanation = computed(() => fallbackReasonLabel(displayResult.value?.fallbackReason));
 
 const intentLabels: Record<string, string> = {
   trend: "趋势分析",
@@ -63,15 +84,15 @@ const chartTypeLabels: Record<string, string> = {
 const sourceLabels: Record<string, string> = {
   deepseek: "DeepSeek 模型",
   llm: "大模型生成",
-  "llm+fallback": "大模型生成 + 本地规则补全",
+  "llm+fallback": "大模型 + 规则补全",
   fallback: "本地规则补全",
   mock: "演示规则",
 };
 
 const targetLabels: Record<string, string> = {
-  echarts: "ECharts 图表配置",
-  chartjs: "Chart.js 图表配置",
-  mermaid: "Mermaid 图示源码",
+  echarts: "ECharts",
+  chartjs: "Chart.js",
+  mermaid: "Mermaid",
 };
 
 const chartJsCanvas = ref<HTMLCanvasElement | null>(null);
@@ -93,6 +114,18 @@ function targetLabelList(values: string[] | undefined) {
 function llmStatusLabel(item: VizLabChartCodeResponse) {
   if (!item.llmAttempted) return "未调用大模型";
   return item.llmSucceeded ? "调用成功" : "调用失败，已降级";
+}
+
+function fallbackReasonLabel(reason?: string | null) {
+  if (!reason) return "";
+  const labels: Record<string, string> = {
+    llm_mermaid_invalid: "大模型返回的 Mermaid 语法不稳定，系统已使用本地规则重新生成可预览版本。",
+    llm_parse_failed: "大模型返回内容无法稳定解析，系统已使用本地规则生成结构化结果。",
+    llm_validation_failed: "自动校验发现部分输出不稳定，系统已切换为本地规则补全。",
+    llm_unavailable: "大模型服务暂不可用，系统已使用本地规则完成生成。",
+    llm_failed: "大模型调用未完成，系统已使用本地规则完成生成。",
+  };
+  return labels[reason] || `系统已启用本地规则补全，保证图表仍可预览。技术标记：${reason}`;
 }
 
 function cleanupMermaidArtifacts(id: string) {
@@ -171,7 +204,9 @@ function renderEcharts(opt: Record<string, any> | null | undefined) {
 }
 
 async function run() {
+  if (isBusy.value) return;
   loading.value = true;
+  emit("loadingChange", true);
   err.value = "";
   result.value = null;
   destroyChartJs();
@@ -208,6 +243,7 @@ async function run() {
     err.value = e?.message || String(e);
   } finally {
     loading.value = false;
+    emit("loadingChange", false);
   }
 }
 
@@ -262,29 +298,29 @@ onBeforeUnmount(() => {
       <button
         class="btn"
         type="button"
-        :disabled="loading || !(slide.topic?.trim() || slide.body?.trim())"
+        :disabled="isBusy || !(slide.topic?.trim() || slide.body?.trim())"
         @click="run"
       >
-        {{ loading ? "生成中…" : "生成可渲染代码" }}
+        {{ isBusy ? "生成中…" : "生成可渲染代码" }}
       </button>
       <p v-if="err" class="err">{{ err }}</p>
     </div>
 
     <div v-if="hasDisplayResult" class="panel meta">
-      <div class="pills">
-        <span v-if="props.initialIntent" class="pill">意图：{{ labelOf(intentLabels, props.initialIntent) }}</span>
-        <span v-if="props.initialChartType" class="pill">图表类型：{{ labelOf(chartTypeLabels, props.initialChartType) }}</span>
-        <span v-if="displayResult?.source" class="pill">来源：{{ labelOf(sourceLabels, displayResult.source) }}</span>
-        <span v-if="displayResult?.generatedTargets?.length" class="pill">
-          输出：{{ targetLabelList(displayResult.generatedTargets) }}
-        </span>
-        <span v-if="displayResult?.llmAttempted != null" class="pill">
-          大模型状态：{{ llmStatusLabel(displayResult) }}
-        </span>
+      <div class="summary-list">
+        <article v-for="item in chartSummaryItems" :key="item.label" class="summary-item">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </article>
       </div>
       <p v-if="props.initialReason" class="reason">{{ props.initialReason }}</p>
-      <p v-if="displayResult?.fallbackReason" class="reason warn">降级原因：{{ displayResult.fallbackReason }}</p>
-      <span v-if="displayResult" class="src">来源：{{ labelOf(sourceLabels, displayResult.source) }}</span>
+      <p v-if="fallbackExplanation" class="reason warn">{{ fallbackExplanation }}</p>
+      <details v-if="chartRunDetailItems.length" class="run-details">
+        <summary>生成详情</summary>
+        <div class="detail-grid">
+          <span v-for="item in chartRunDetailItems" :key="item.label">{{ item.label }}：{{ item.value }}</span>
+        </div>
+      </details>
       <div v-if="displayResult?.validationIssues?.length" class="issues">
         <h3>自动校验</h3>
         <ul>
@@ -428,23 +464,33 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-control);
   padding: var(--space-3);
 }
-.pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.summary-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
   margin-bottom: 12px;
 }
-.pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
+.summary-item {
+  min-width: 0;
+  padding: 10px 12px;
   border: 1px solid var(--color-primary-border);
-  padding: 6px 11px;
   border-radius: var(--radius-control);
+  background: rgba(255, 250, 251, 0.78);
+}
+.summary-item span {
+  display: block;
+  color: var(--color-muted);
   font-size: 12px;
   font-weight: 700;
+  margin-bottom: 4px;
+}
+.summary-item strong {
+  display: block;
+  color: var(--color-primary);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 .reason {
   background: var(--color-surface);
@@ -459,11 +505,26 @@ onBeforeUnmount(() => {
 }
 .reason.warn {
   border-left-color: var(--color-warning);
+  background: #fffaf0;
 }
-.src {
+.run-details {
+  margin: 8px 0 12px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.detail-grid span {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-muted);
+  color: var(--color-muted);
   font-size: 12px;
-  font-weight: 700;
-  color: var(--color-primary);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .issues ul {
   margin: 8px 0 0;

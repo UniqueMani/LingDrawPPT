@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 try:
@@ -33,9 +34,11 @@ def _chart_code_system_prompt(targets: List[str], instructions: Optional[str]) -
         "构成占比使用 pie；流程和层级优先用 Mermaid flowchart；关系流向 ECharts 使用 sankey；"
         "表格用可读表格 fallback，无法原生表达的引擎返回 null 并在 warnings 中说明。"
         "ECharts 和 Chart.js 必须包含 title、tooltip、legend、坐标轴名称或等效标签；坐标轴单位应从语义或文本中继承。"
-        "Mermaid 必须使用合法语法：pie、xychart-beta 或 flowchart。"
+        "Mermaid 必须使用合法语法：pie、xychart-beta 或 flowchart。Mermaid 只返回源码字符串，不要包裹 ```mermaid 代码块。"
         "xychart-beta 的 title 必须写成 title \"标题\"；x-axis 必须写成 x-axis [\"1月\", \"2月\"] 或 x-axis \"月份\" [\"1月\", \"2月\"]；"
-        "趋势图必须使用 line [数值...]，普通对比图使用 bar [数值...]；不要使用中文弯引号。"
+        "y-axis 必须写成 y-axis \"值\" 0 --> 100；趋势图必须使用 line [数值...]，普通对比图使用 bar [数值...]；"
+        "不要写 line: [数值...] 或 bar: [数值...]；不要使用中文弯引号。"
+        "Mermaid 示例：xychart-beta\n    title \"月度趋势\"\n    x-axis [\"1月\", \"2月\"]\n    y-axis \"值\" 0 --> 100\n    line [40, 80]。"
         + extra
     )
 
@@ -88,6 +91,119 @@ def _has_mermaid_error(src: Optional[str]) -> bool:
     return any(sev == "error" for sev, _msg in validate_mermaid(src))
 
 
+def _quote_axis_items(raw: str) -> str:
+    items: List[str] = []
+    for item in raw.split(","):
+        text = item.strip().strip("\"'“”")
+        if not text:
+            continue
+        text = text.replace("\\", "\\\\").replace('"', '\\"')
+        items.append(f'"{text}"')
+    return "[" + ", ".join(items) + "]"
+
+
+def _clean_mermaid_number(value: str) -> str:
+    cleaned = value.strip().replace(",", "")
+    try:
+        number = float(cleaned)
+    except Exception:
+        return "0"
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.6g}"
+
+
+def _extract_xychart_values(lines: List[str]) -> List[float]:
+    values: List[float] = []
+    for line in lines:
+        stripped = line.strip()
+        match = re.match(r"^(?:line|bar)\s+\[([^\]]*)\]$", stripped, re.I)
+        if not match:
+            continue
+        for item in match.group(1).split(","):
+            try:
+                values.append(float(item.strip().replace(",", "")))
+            except Exception:
+                continue
+    return values
+
+
+def _normalize_mermaid_source(src: Optional[str]) -> Optional[str]:
+    if not isinstance(src, str):
+        return src
+    text = src.strip()
+    if not text:
+        return text
+    fence = re.match(r"^```(?:mermaid)?\s*([\s\S]*?)\s*```$", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+    text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    if not re.match(r"^xychart-beta\b", text, re.I):
+        return text
+
+    normalized: List[str] = []
+    has_y_axis = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        indent = line[: len(line) - len(line.lstrip())]
+        if re.match(r"^title\s*[:：]?\s+", stripped):
+            title = re.sub(r"^title\s*[:：]?\s+", "", stripped).strip().strip("\"'")
+            line = f'{indent}title "{title}"'
+        elif re.match(r"^x-axis\b", stripped):
+            stripped = re.sub(r"^x-axis\s*[:：]\s*", "x-axis ", stripped)
+            match = re.match(r'^x-axis(?:\s+"([^"]+)")?\s+\[([^\]]*)\]$', stripped)
+            if match:
+                axis_title = f' "{match.group(1)}"' if match.group(1) else ""
+                line = f"{indent}x-axis{axis_title} {_quote_axis_items(match.group(2))}"
+            else:
+                loose_match = re.match(r'^x-axis(?:\s+"([^"]+)")?\s+(.+)$', stripped)
+                if loose_match:
+                    axis_title = f' "{loose_match.group(1)}"' if loose_match.group(1) else ""
+                    raw_items = loose_match.group(2).strip().strip("[]")
+                    line = f"{indent}x-axis{axis_title} {_quote_axis_items(raw_items)}"
+        elif re.match(r"^y-axis\b", stripped):
+            stripped = re.sub(r"^y-axis\s*[:：]\s*", "y-axis ", stripped)
+            range_match = re.match(
+                r"^y-axis(?:\s+\"[^\"]+\")?\s+\[\s*([-+]?\d[\d,]*(?:\.\d+)?)\s*,\s*([-+]?\d[\d,]*(?:\.\d+)?)\s*\]$",
+                stripped,
+            )
+            if range_match:
+                line = f'{indent}y-axis "值" {_clean_mermaid_number(range_match.group(1))} --> {_clean_mermaid_number(range_match.group(2))}'
+                has_y_axis = True
+            else:
+                arrow_match = re.match(
+                    r"^y-axis(?:\s+\"[^\"]+\")?\s+([-+]?\d[\d,]*(?:\.\d+)?)\s*(?:-->|to|至|-)\s*([-+]?\d[\d,]*(?:\.\d+)?)$",
+                    stripped,
+                    re.I,
+                )
+                if arrow_match:
+                    line = f'{indent}y-axis "值" {_clean_mermaid_number(arrow_match.group(1))} --> {_clean_mermaid_number(arrow_match.group(2))}'
+                    has_y_axis = True
+                else:
+                    numbers = re.findall(r"[-+]?\d[\d,]*(?:\.\d+)?", stripped)
+                    if len(numbers) >= 2:
+                        line = f'{indent}y-axis "值" {_clean_mermaid_number(numbers[-2])} --> {_clean_mermaid_number(numbers[-1])}'
+                        has_y_axis = True
+        elif re.match(r"^(line|bar)\s*:", stripped):
+            line = indent + re.sub(r"^(line|bar)\s*:", r"\1", stripped)
+        normalized.append(line)
+    if not has_y_axis:
+        values = _extract_xychart_values(normalized)
+        if values:
+            ymax = max(values)
+            ymin = min(values)
+            lower = 0 if ymin >= 0 else ymin * 1.1
+            upper = ymax * 1.1 if ymax > 0 else 10
+            y_axis = f'    y-axis "值" {_clean_mermaid_number(str(lower))} --> {_clean_mermaid_number(str(upper))}'
+            insert_at = 1
+            for i, line in enumerate(normalized):
+                if line.strip().startswith("x-axis "):
+                    insert_at = i + 1
+                    break
+            normalized.insert(insert_at, y_axis)
+    return "\n".join(normalized).strip()
+
+
 def generate_chart_code_bundle(
     slide: SlideRequest,
     targets: List[str],
@@ -132,7 +248,7 @@ def generate_chart_code_bundle(
             if isinstance(parsed.get("chartJsConfig"), dict):
                 cjs = parsed["chartJsConfig"]
             if isinstance(parsed.get("mermaidSource"), str):
-                mer = parsed["mermaidSource"]
+                mer = _normalize_mermaid_source(parsed["mermaidSource"])
             llm_succeeded = any([opt, cjs, mer])
             source = "llm" if llm_succeeded else "fallback"
             if not llm_succeeded:

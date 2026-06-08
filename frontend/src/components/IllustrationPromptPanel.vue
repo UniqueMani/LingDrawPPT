@@ -132,6 +132,7 @@ async function rerunDocAnalysis() {
 }
 
 function runFluxGenerate() {
+  if (isFluxLoading.value) return;
   if (!canGenerateFlux.value) {
     fluxErr.value = "请先在预览区框选文字并写入正文，或填写页面主题。";
     return;

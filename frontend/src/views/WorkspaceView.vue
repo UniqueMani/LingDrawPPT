@@ -515,7 +515,24 @@ async function runChartCodeOnly() {
 }
 
 const chartBusy = computed(() => currentSlide.value?.statusAnalyze === "loading");
-const workflowBusy = computed(() => chartBusy.value || currentSlide.value?.statusFluxImage === "loading" || fullWorkflowBusy.value);
+const workflowBusy = computed(
+  () =>
+    Boolean(workflowRunningStep.value) ||
+    chartBusy.value ||
+    currentSlide.value?.statusFluxImage === "loading" ||
+    fullWorkflowBusy.value
+);
+
+function onWorkflowPanelLoading(step: WorkflowStep, loading: boolean) {
+  if (loading) {
+    workflowRunningStep.value = step;
+    workflowErrorStep.value = null;
+    return;
+  }
+  if (workflowRunningStep.value === step) {
+    workflowRunningStep.value = null;
+  }
+}
 
 function onIntentPanelResult(semantic: Record<string, any>) {
   const slide = currentSlide.value;
@@ -1355,7 +1372,9 @@ void workflowStepClass;
                   :initial-semantic="currentSlide.intentSemantic || currentSlide.analyze?.semantic || null"
                   :initial-reason="currentSlide.analyze?.chart?.reason || null"
                   :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
+                  :external-loading="workflowRunningStep === 'intent' || fullWorkflowBusy"
                   @result="onIntentPanelResult"
+                  @loading-change="onWorkflowPanelLoading('intent', $event)"
                 />
               </section>
 
@@ -1376,7 +1395,9 @@ void workflowStepClass;
                   :initial-intent="currentSlide.analyze?.chart?.intent || null"
                   :initial-chart-type="currentSlide.analyze?.chart?.chartType || null"
                   :initial-reason="currentSlide.analyze?.chart?.reason || null"
+                  :external-loading="workflowRunningStep === 'chart' || fullWorkflowBusy"
                   @result="onChartCodeResult"
+                  @loading-change="onWorkflowPanelLoading('chart', $event)"
                 />
               </section>
 
@@ -1422,14 +1443,18 @@ void workflowStepClass;
             v-if="functionMode === 'intent' && currentSlide"
             v-model:slide="currentSlide.input"
             :initial-semantic="currentSlide.intentSemantic || currentSlide.analyze?.semantic || null"
+            :external-loading="workflowRunningStep === 'intent' || fullWorkflowBusy"
             @result="onIntentPanelResult"
+            @loading-change="onWorkflowPanelLoading('intent', $event)"
           />
           <ChartCodePanel
             v-if="functionMode === 'code' && currentSlide"
             v-model:slide="currentSlide.input"
             :initial-result="currentSlide.chartCode || null"
             :initial-echarts-option="currentSlide.analyze?.chart?.echartsOption || null"
+            :external-loading="workflowRunningStep === 'chart' || fullWorkflowBusy"
             @result="onChartCodeResult"
+            @loading-change="onWorkflowPanelLoading('chart', $event)"
           />
           <IllustrationPromptPanel
             v-if="functionMode === 'illustration' && currentSlide"

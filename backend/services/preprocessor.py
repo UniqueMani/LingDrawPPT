@@ -411,6 +411,36 @@ def parse_time_series(text: str) -> Tuple[List[str], List[float]]:
         nums = nums[:n]
         return [f"T{i+1}" for i in range(len(nums))], nums
 
+    month_range = re.search(
+        r"([1-9]|1[0-2])月\s*(?:至|到|-|—)\s*([1-9]|1[0-2])月.*?(?:分别为|为|[:：=])\s*((?:-?\d+(?:\.\d+)?\s*[、,，]\s*)+-?\d+(?:\.\d+)?)",
+        text,
+        re.S,
+    )
+    if month_range:
+        start = int(month_range.group(1))
+        end = int(month_range.group(2))
+        if start <= end:
+            labels = [f"{m}月" for m in range(start, end + 1)]
+            values = [_to_float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", month_range.group(3))]
+            n = min(len(labels), len(values))
+            if n >= 2:
+                return labels[:n], values[:n]
+
+    year_range = re.search(
+        r"((?:19|20)\d{2})年?\s*(?:至|到|-|—)\s*((?:19|20)\d{2})年?.*?(?:分别为|为|[:：=])\s*((?:-?\d+(?:\.\d+)?\s*[、,，]\s*)+-?\d+(?:\.\d+)?)",
+        text,
+        re.S,
+    )
+    if year_range:
+        start = int(year_range.group(1))
+        end = int(year_range.group(2))
+        if start <= end and end - start <= 20:
+            labels = [str(y) for y in range(start, end + 1)]
+            values = [_to_float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", year_range.group(3))]
+            n = min(len(labels), len(values))
+            if n >= 2:
+                return labels[:n], values[:n]
+
     return [], []
 
 

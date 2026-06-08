@@ -11,17 +11,43 @@ const props = defineProps<{
   initialReason?: string | null;
   initialChartType?: string | null;
   hideSlideInput?: boolean;
+  externalLoading?: boolean;
 }>();
 const emit = defineEmits<{
   result: [semantic: Record<string, any>];
+  loadingChange: [loading: boolean];
 }>();
 
 const loading = ref(false);
+const isBusy = computed(() => loading.value || props.externalLoading);
 const err = ref("");
 const semantic = ref<Record<string, any> | null>(null);
 const displaySemantic = computed(() => semantic.value || props.initialSemantic || null);
 const displayReason = computed(() => displaySemantic.value?.reason || props.initialReason || "");
 const displayChartType = computed(() => displaySemantic.value?.chartType || props.initialChartType || "");
+const confidenceBreakdown = computed(() => displaySemantic.value?.confidenceBreakdown || null);
+const coreSummary = computed(() => {
+  const item = displaySemantic.value;
+  if (!item) return [];
+  return [
+    item.intent ? { label: "意图", value: labelOf(intentLabels, item.intent) } : null,
+    displayChartType.value ? { label: "图表类型", value: labelOf(chartTypeLabels, displayChartType.value) } : null,
+    item.confidence != null ? { label: "置信度", value: formatPercent(item.confidence) } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+});
+
+const runDetailItems = computed(() => {
+  const item = displaySemantic.value;
+  if (!item) return [];
+  return [
+    item.source ? { label: "来源", value: labelOf(sourceLabels, item.source) } : null,
+    item.runtimeMode ? { label: "运行模式", value: labelOf(sourceLabels, item.runtimeMode) } : null,
+    item.llmAttempted != null ? { label: "大模型状态", value: llmStatusLabel(item) } : null,
+    item.intentConfidence != null ? { label: "意图判断", value: formatPercent(item.intentConfidence) } : null,
+    item.dataExtractionConfidence != null ? { label: "数据抽取", value: formatPercent(item.dataExtractionConfidence) } : null,
+    item.chartSuitabilityConfidence != null ? { label: "图表适配", value: formatPercent(item.chartSuitabilityConfidence) } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+});
 
 const intentLabels: Record<string, string> = {
   trend: "趋势分析",
@@ -58,7 +84,8 @@ function labelOf(map: Record<string, string>, value: unknown) {
 }
 
 function formatPercent(value: unknown) {
-  return `${(Number(value) * 100).toFixed(0)}%`;
+  const n = Number(value);
+  return Number.isFinite(n) ? `${(n * 100).toFixed(0)}%` : "-";
 }
 
 function llmStatusLabel(item: Record<string, any>) {
@@ -67,7 +94,9 @@ function llmStatusLabel(item: Record<string, any>) {
 }
 
 async function run() {
+  if (isBusy.value) return;
   loading.value = true;
+  emit("loadingChange", true);
   err.value = "";
   semantic.value = null;
   try {
@@ -78,6 +107,7 @@ async function run() {
     err.value = e?.message || String(e);
   } finally {
     loading.value = false;
+    emit("loadingChange", false);
   }
 }
 </script>
@@ -90,44 +120,38 @@ async function run() {
       <button
         class="btn primary"
         type="button"
-        :disabled="loading || !(slide.topic?.trim() || slide.body?.trim())"
+        :disabled="isBusy || !(slide.topic?.trim() || slide.body?.trim())"
         @click="run"
       >
-        {{ loading ? "分析中…" : "运行意图分析" }}
+        {{ isBusy ? "分析中..." : "运行意图分析" }}
       </button>
       <p v-if="err" class="err">{{ err }}</p>
     </div>
 
     <div v-if="displaySemantic" class="panel result">
       <h2>解析结果</h2>
-      <div class="pills">
-        <span v-if="displaySemantic.intent" class="pill">意图：{{ labelOf(intentLabels, displaySemantic.intent) }}</span>
-        <span v-if="displayChartType" class="pill">图表类型：{{ labelOf(chartTypeLabels, displayChartType) }}</span>
-        <span v-if="displaySemantic.source" class="pill">来源：{{ labelOf(sourceLabels, displaySemantic.source) }}</span>
-        <span v-if="displaySemantic.confidence != null" class="pill"
-          >总体置信度：{{ formatPercent(displaySemantic.confidence) }}</span
-        >
-        <span v-if="displaySemantic.intentConfidence != null" class="pill"
-          >意图判断：{{ formatPercent(displaySemantic.intentConfidence) }}</span
-        >
-        <span v-if="displaySemantic.dataExtractionConfidence != null" class="pill"
-          >数据抽取：{{ formatPercent(displaySemantic.dataExtractionConfidence) }}</span
-        >
-        <span v-if="displaySemantic.chartSuitabilityConfidence != null" class="pill"
-          >图表适配：{{ formatPercent(displaySemantic.chartSuitabilityConfidence) }}</span
-        >
-        <span v-if="displaySemantic.runtimeMode" class="pill">运行模式：{{ labelOf(sourceLabels, displaySemantic.runtimeMode) }}</span>
-        <span v-if="displaySemantic.llmAttempted != null" class="pill"
-          >大模型状态：{{ llmStatusLabel(displaySemantic) }}</span
-        >
+      <div class="summary-grid">
+        <article v-for="item in coreSummary" :key="item.label" class="summary-item">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </article>
       </div>
       <p v-if="displayReason" class="reason">{{ displayReason }}</p>
-      <details open>
+      <details v-if="runDetailItems.length" class="run-details">
+        <summary>运行详情</summary>
+        <div class="detail-grid">
+          <span v-for="item in runDetailItems" :key="item.label">{{ item.label }}：{{ item.value }}</span>
+        </div>
+      </details>
+      <details v-if="confidenceBreakdown" class="breakdown">
+        <summary>置信度解释</summary>
+        <pre class="pre">{{ JSON.stringify(confidenceBreakdown, null, 2) }}</pre>
+      </details>
+      <details>
         <summary>semantic JSON（含 scores 可导出做实验）</summary>
         <pre class="pre">{{ JSON.stringify(displaySemantic, null, 2) }}</pre>
       </details>
     </div>
-
   </div>
 </template>
 
@@ -189,23 +213,32 @@ async function run() {
   border-radius: var(--radius-control);
   padding: var(--space-3);
 }
-.pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
   margin-bottom: 12px;
 }
-.pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
+.summary-item {
+  min-width: 0;
+  background: rgba(255, 250, 251, 0.78);
   border: 1px solid var(--color-primary-border);
-  padding: 6px 11px;
   border-radius: var(--radius-control);
+  padding: 10px 12px;
+}
+.summary-item span {
+  display: block;
+  color: var(--color-muted);
   font-size: 12px;
   font-weight: 700;
+  margin-bottom: 4px;
+}
+.summary-item strong {
+  display: block;
+  color: var(--color-primary);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
 }
 .note {
   margin: 0 0 10px;
@@ -228,8 +261,27 @@ async function run() {
   line-height: 1.55;
   margin: 0 0 12px;
 }
-.reason.warn {
-  border-left-color: var(--color-warning);
+.run-details {
+  margin-top: 8px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.detail-grid span {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-muted);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+details {
+  margin-top: 10px;
 }
 details summary {
   cursor: pointer;
@@ -246,11 +298,5 @@ details summary {
   font-size: 12px;
   overflow: auto;
   max-height: 320px;
-}
-.hint {
-  font-size: 13px;
-  color: var(--color-muted);
-  line-height: 1.5;
-  margin: 0;
 }
 </style>
