@@ -228,6 +228,7 @@ export interface FluxGenerateImagePayload {
   prompt?: string;
   generation_mode?: "standard" | "fast";
   slide_page?: number;
+  slide_type?: SlideType;
   use_doc_style?: boolean;
   use_entity_sync?: boolean;
   doc_consistency?: AnalyzeDocumentResponse | null;
@@ -263,12 +264,46 @@ export interface ImageQualityEvaluation {
   feedback: string;
 }
 
+export interface ImageJudgeFix {
+  issueArea: string;
+  severity: string;
+  problem: string;
+  constraint: string;
+  preserve: string[];
+  priority: number;
+}
+
+export interface ImageJudgeFeedback {
+  feedbackConfidence: number;
+  cannotModify: string[];
+  fixes: ImageJudgeFix[];
+  lowScoreDimensions: Record<string, number>;
+  discarded: boolean;
+  source: string;
+}
+
+export interface ImageGenAttemptLog {
+  attempt: number;
+  promptUsed: string;
+  resultImageUrl: string;
+  evaluation: ImageQualityEvaluation;
+  judgeFeedback?: ImageJudgeFeedback | null;
+}
+
 export interface DocumentStyleProfile {
   domain: string;
   style_tokens: string[];
   style_prompt_zh: string;
   color_palette: string[];
   negative_style: string;
+  color_theme?: string[];
+  visual_density?: string;
+  illustration_style?: string;
+  illustration_level?: string;
+  shape_language?: string;
+  icon_style?: string;
+  layout_style?: string;
+  render_style?: string;
 }
 
 export interface SharedEntity {
@@ -278,6 +313,9 @@ export interface SharedEntity {
   color_hint: string;
   pages: number[];
   frequency: number;
+  entity_type?: string;
+  importance?: number;
+  relations?: string[];
 }
 
 export interface SlideVisualPlan {
@@ -286,6 +324,17 @@ export interface SlideVisualPlan {
   slide_role: string;
   visual_focus: string;
   entity_ids: string[];
+  topic_type?: string;
+  content_intent?: string;
+  visual_type?: string;
+  page_role?: string;
+  visual_primitives?: string[];
+  focus?: string;
+  layout?: string;
+  related_pages?: number[];
+  global_constraints?: string;
+  page_constraints?: string;
+  primitive_keys?: string[];
 }
 
 export interface AnalyzeDocumentResponse {
@@ -304,6 +353,8 @@ export interface FluxGenerateImageResponse {
   mode: string;
   attempts?: number;
   regenerated?: boolean;
+  selectedAttempt?: number;
   evaluation?: ImageQualityEvaluation | null;
+  attemptsLog?: ImageGenAttemptLog[];
 }
 

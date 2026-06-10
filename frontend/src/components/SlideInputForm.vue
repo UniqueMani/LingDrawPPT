@@ -47,8 +47,8 @@ const slide = defineModel<SlideRequest>({ required: true });
         <label>推理模式</label>
         <select v-model="slide.mode" class="sel">
           <option value="auto">Auto</option>
-          <option value="mock">规则 Mock</option>
-          <option value="deepseek">DeepSeek</option>
+          <option value="mock">快速模式</option>
+          <option value="deepseek">AI模式</option>
         </select>
       </div>
     </div>

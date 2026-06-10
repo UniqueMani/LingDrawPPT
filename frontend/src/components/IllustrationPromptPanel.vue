@@ -6,6 +6,7 @@ import type {
   AnalyzeDocumentResponse,
   FluxGenerateImagePayload,
   FluxGenerateImageResponse,
+  ImageGenAttemptLog,
   SlideRequest,
 } from "../types";
 
@@ -36,6 +37,8 @@ const fluxErr = ref("");
 const displayFluxImage = computed(() => props.initialFluxImage || null);
 const displayFluxImageUrl = computed(() => displayFluxImage.value?.resultImageUrl || "");
 const displayFluxAttempts = computed(() => displayFluxImage.value?.attempts || 0);
+const displaySelectedAttempt = computed(() => displayFluxImage.value?.selectedAttempt || displayFluxAttempts.value || 1);
+const displayFluxAttemptsLog = computed(() => displayFluxImage.value?.attemptsLog || []);
 const displayFluxEvaluation = computed(() => displayFluxImage.value?.evaluation || null);
 const displayFluxScore = computed(() => displayFluxEvaluation.value?.totalScore ?? 0);
 const displayFluxThreshold = computed(() => displayFluxEvaluation.value?.passThreshold ?? 72);
@@ -107,6 +110,31 @@ function scoreTone(score: number) {
   return "low";
 }
 
+function dimensionScore(entry: ImageGenAttemptLog, key: string) {
+  return entry.evaluation?.dimensions?.find((item) => item.key === key)?.score ?? null;
+}
+
+const fluxCandidateDetails = computed(() =>
+  displayFluxAttemptsLog.value.map((entry: ImageGenAttemptLog) => ({
+    attempt: entry.attempt,
+    score: entry.evaluation?.totalScore ?? 0,
+    selected: entry.attempt === displaySelectedAttempt.value,
+    textFidelity: dimensionScore(entry, "text_fidelity"),
+    semantic: dimensionScore(entry, "semantic_alignment"),
+    layout: dimensionScore(entry, "layout_quality"),
+    feedback: entry.evaluation?.feedback || "",
+  }))
+);
+
+const fluxRoundSummaries = computed(() =>
+  displayFluxAttemptsLog.value.map((entry: ImageGenAttemptLog) => ({
+    attempt: entry.attempt,
+    score: entry.evaluation?.totalScore ?? 0,
+    passed: Boolean(entry.evaluation?.passed),
+    selected: entry.attempt === displaySelectedAttempt.value,
+  }))
+);
+
 function openFluxImage(url: string) {
   if (url) window.open(url, "_blank", "noopener,noreferrer");
 }
@@ -142,6 +170,7 @@ function runFluxGenerate() {
     selected_text: selectedText.value,
     topic: slide.value.topic,
     slide_page: props.slidePage || 1,
+    slide_type: slide.value.slide_type || "content",
     use_doc_style: useDocStyle.value,
     use_entity_sync: useEntitySync.value,
     doc_consistency: useDocStyle.value || useEntitySync.value ? docProfile.value : null,
@@ -192,7 +221,7 @@ defineExpose({ runFluxGenerate });
           @click="generationMode = 'standard'"
         >
           <strong>通用模式</strong>
-          <span>最多 3 次，质量不达标时自动重试</span>
+          <span>独立生成 3 张候选，评分后选最优</span>
         </button>
         <button
           type="button"
@@ -228,7 +257,20 @@ defineExpose({ runFluxGenerate });
           </div>
           <p class="doc-style-zh">{{ docProfile.style.style_prompt_zh }}</p>
           <p v-if="currentSlidePlan" class="slide-plan">
-            本页角色：<b>{{ currentSlidePlan.slide_role }}</b> · {{ currentSlidePlan.visual_focus }}
+            本页：<b>{{ currentSlidePlan.page_role || currentSlidePlan.slide_role }}</b>
+            <template v-if="currentSlidePlan.topic_type || currentSlidePlan.content_intent">
+              · topic={{ currentSlidePlan.topic_type || "—" }}
+              · intent={{ currentSlidePlan.content_intent || "—" }}
+              · visual={{ currentSlidePlan.visual_type || "—" }}
+            </template>
+            <br />
+            {{ currentSlidePlan.visual_focus }}
+            <span v-if="currentSlidePlan.related_pages?.length" class="related-pages">
+              （关联页：{{ currentSlidePlan.related_pages.join(", ") }}）
+            </span>
+            <span v-if="currentSlidePlan.primitive_keys?.length" class="primitive-keys">
+              · 复用组件：{{ currentSlidePlan.primitive_keys.join(", ") }}
+            </span>
           </p>
           <ul v-if="currentPageEntities.length" class="entity-list">
             <li v-for="ent in currentPageEntities" :key="ent.id">
@@ -274,7 +316,7 @@ defineExpose({ runFluxGenerate });
         <div class="pill-row">
           <span class="pill">文生图</span>
           <span v-if="displayFluxAttempts > 1" class="pill muted">
-            共 {{ displayFluxAttempts }} 轮生成
+            共 {{ displayFluxAttempts }} 轮 · 选用第 {{ displaySelectedAttempt }} 轮
           </span>
           <span
             v-if="hasFluxEvaluation"
@@ -298,14 +340,47 @@ defineExpose({ runFluxGenerate });
         <div v-if="hasFluxEvaluation" class="eval-panel">
           <div class="eval-summary">
             <div>
-              <span class="eval-kicker">质量评分</span>
+              <span class="eval-kicker">综合分 / 及格线</span>
               <strong>{{ displayFluxScore.toFixed(0) }} / {{ displayFluxThreshold.toFixed(0) }}</strong>
+              <span class="eval-score-note">左侧为最终选用图的综合分，右侧为通过阈值（默认 72）</span>
             </div>
             <span :class="displayFluxPassed ? 'eval-status pass' : 'eval-status warn'">
               {{ displayFluxPassed ? "通过" : "未达标" }}
             </span>
           </div>
           <p v-if="displayFluxFeedback" class="eval-feedback">{{ displayFluxFeedback }}</p>
+          <div v-if="fluxRoundSummaries.length > 1" class="eval-rounds">
+            <span class="eval-rounds-title">各轮得分</span>
+            <div class="eval-rounds-row">
+              <span
+                v-for="item in fluxRoundSummaries"
+                :key="item.attempt"
+                class="eval-round-chip"
+                :class="{ selected: item.selected }"
+              >
+                第 {{ item.attempt }} 轮 {{ item.score.toFixed(0) }} 分
+                <template v-if="item.selected">（选用）</template>
+              </span>
+            </div>
+          </div>
+          <div v-if="fluxCandidateDetails.length > 1" class="refine-panel">
+            <span class="refine-title">候选对比（独立生成，同一 Prompt）</span>
+            <article v-for="item in fluxCandidateDetails" :key="item.attempt" class="refine-step">
+              <header class="refine-step-head">
+                <strong>候选 {{ item.attempt }}</strong>
+                <span>
+                  综合 {{ item.score.toFixed(0) }} 分
+                  <template v-if="item.selected"> · 已选用</template>
+                </span>
+              </header>
+              <p class="refine-meta">
+                文字真实性 {{ item.textFidelity?.toFixed(0) ?? "-" }} ·
+                语义 {{ item.semantic?.toFixed(0) ?? "-" }} ·
+                布局 {{ item.layout?.toFixed(0) ?? "-" }}
+              </p>
+              <p v-if="item.feedback" class="refine-next">{{ item.feedback }}</p>
+            </article>
+          </div>
           <div v-if="fluxScoreRows.length" class="eval-list">
             <div v-for="item in fluxScoreRows" :key="item.key" class="eval-row">
               <div class="eval-meta">
@@ -671,6 +746,105 @@ label {
   font-size: 13px;
   color: var(--color-text-soft);
   line-height: 1.5;
+}
+.eval-score-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-muted);
+  font-weight: 500;
+}
+.eval-rounds {
+  margin-bottom: var(--space-4);
+}
+.eval-rounds-title,
+.refine-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--color-text-soft);
+}
+.eval-rounds-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.eval-round-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-muted);
+  font-size: 12px;
+  color: var(--color-text-soft);
+}
+.eval-round-chip.selected {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-weight: 700;
+}
+.refine-panel {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-control);
+  background: #fafafa;
+}
+.refine-step + .refine-step {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.refine-step-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.refine-step-head span {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.refine-meta,
+.refine-discarded,
+.refine-next {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--color-text-soft);
+  line-height: 1.5;
+}
+.refine-fix-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--color-text);
+}
+.refine-fix-list li + li {
+  margin-top: 4px;
+}
+.refine-fix-area {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.refine-next code {
+  display: block;
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
 }
 .eval-list {
   display: flex;

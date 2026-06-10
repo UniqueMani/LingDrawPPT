@@ -557,7 +557,20 @@ async function startFluxImageJob(slideId: string, payload: FluxGenerateImagePayl
     const pass = result.evaluation?.passed;
     const extra = score != null ? `（质量 ${score.toFixed(0)}，${pass ? "通过" : "未达标"}）` : "";
     const completedSlide = store.slides.find((s) => s.id === slideId);
-    store.addLog(`第 ${completedSlide?.page ?? targetSlide.page} 页：文生图已生成${extra}`);
+    const page = completedSlide?.page ?? targetSlide.page;
+    if (result.attemptsLog?.length && result.attempts && result.attempts > 1) {
+      for (const entry of result.attemptsLog) {
+        const textFidelity = entry.evaluation?.dimensions?.find((d) => d.key === "text_fidelity")?.score;
+        store.addLog(
+          `第 ${page} 页 · 候选 ${entry.attempt}：综合 ${entry.evaluation?.totalScore?.toFixed(0) ?? "-"} 分，文字真实性 ${textFidelity?.toFixed(0) ?? "-"} 分`
+        );
+      }
+      if (result.selectedAttempt) {
+        store.addLog(`第 ${page} 页 · 选用候选 ${result.selectedAttempt}${extra}`);
+      }
+    } else {
+      store.addLog(`第 ${page} 页：文生图已生成${extra}`);
+    }
   } catch (e: any) {
     const message = e?.message || String(e);
     const applied = failFluxJob(store.fluxJobs, store.slides, slideId, requestKey, message);
@@ -1301,7 +1314,6 @@ void workflowStepClass;
                 <span v-if="fullWorkflowBusy" class="btn-spinner wine-spin"></span>
                 一键跑通全流程
               </button>
-              <span class="workflow-runbar-hint">当前页：语义识别 -> 图表代码 -> 文生图</span>
             </div>
 
             <nav class="module-switcher module-switcher--compact" aria-label="功能模块">

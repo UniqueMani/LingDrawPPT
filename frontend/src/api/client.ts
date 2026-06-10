@@ -36,30 +36,47 @@ function normalizeBaseUrl(baseUrl: string) {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
+function wrapFetchError(error: unknown, url: string): Error {
+  if (error instanceof TypeError) {
+    return new Error(
+      `无法连接后端。请确认 uvicorn 已在仓库根目录运行，且地址为 ${url.split("/api")[0] || url}`
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 async function postJSON<T>(url: string, payload: unknown): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`HTTP ${res.status}: ${t}`);
+    }
+    return (await res.json()) as T;
+  } catch (error) {
+    throw wrapFetchError(error, url);
   }
-  return (await res.json()) as T;
 }
 
 async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
+  try {
+    const res = await fetch(url, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`HTTP ${res.status}: ${t}`);
+    }
+    return (await res.json()) as T;
+  } catch (error) {
+    throw wrapFetchError(error, url);
   }
-  return (await res.json()) as T;
 }
 
 export async function analyze(baseUrl: string, req: SlideRequest) {
@@ -138,16 +155,21 @@ export async function extractText(baseUrl: string, file: File) {
   if (!b) throw new Error("baseUrl 为空");
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${b}/api/extract-text`, {
-    method: "POST",
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-    body: form,
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
+  const url = `${b}/api/extract-text`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+      body: form,
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`HTTP ${res.status}: ${t}`);
+    }
+    return (await res.json()) as ExtractTextResponse;
+  } catch (error) {
+    throw wrapFetchError(error, url);
   }
-  return (await res.json()) as ExtractTextResponse;
 }
 
 export async function listFiles(baseUrl: string) {
@@ -279,15 +301,20 @@ async function adminFetch<T>(baseUrl: string, path: string, init?: RequestInit) 
   if (!b) throw new Error("baseUrl 为空");
   const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(`${b}${path}`, {
-    ...init,
-    headers,
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`HTTP ${res.status}: ${t}`);
+  const url = `${b}${path}`;
+  try {
+    const res = await fetch(url, {
+      ...init,
+      headers,
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`HTTP ${res.status}: ${t}`);
+    }
+    return (await res.json()) as T;
+  } catch (error) {
+    throw wrapFetchError(error, url);
   }
-  return (await res.json()) as T;
 }
 
 export async function adminOverview(baseUrl: string) {

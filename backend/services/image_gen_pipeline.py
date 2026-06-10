@@ -4,23 +4,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from backend.config import IMAGE_GEN_MAX_ATTEMPTS
-from backend.services.image_quality import (
-    ImageQualityReport,
-    build_regeneration_hints,
-    evaluate_generated_image,
-)
+from backend.services.image_quality import evaluate_generated_image
 from backend.services.wan_t2i import WanT2iError, generate_image
 
 logger = logging.getLogger(__name__)
-
-
-def _append_hints(prompt: str, hints: str) -> str:
-    extra = (hints or "").strip()
-    if not extra:
-        return prompt
-    if extra in prompt:
-        return prompt
-    return f"{prompt} {extra}"
 
 
 async def generate_evaluate_regenerate(
@@ -32,11 +19,10 @@ async def generate_evaluate_regenerate(
     prompt_extend: bool,
     generation_mode: str = "standard",
     preview_path: Optional[str] = None,
+    slide_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     attempts_log: List[Dict[str, Any]] = []
-    current_prompt = prompt
-    last_result: Optional[Dict[str, Any]] = None
-    last_eval: Optional[ImageQualityReport] = None
+    base_prompt = prompt.strip()
 
     normalized_mode = (generation_mode or "standard").strip().lower()
     if normalized_mode == "fast":
@@ -44,10 +30,11 @@ async def generate_evaluate_regenerate(
     else:
         max_attempts = min(3, max(1, IMAGE_GEN_MAX_ATTEMPTS))
 
+    gen: Dict[str, Any] = {}
     for attempt in range(1, max_attempts + 1):
-        logger.info("Image pipeline attempt %s/%s", attempt, max_attempts)
+        logger.info("Image pipeline candidate %s/%s (independent)", attempt, max_attempts)
         gen = await generate_image(
-            current_prompt,
+            base_prompt,
             aspect_ratio=aspect_ratio,
             model=model,
             prompt_extend=prompt_extend and attempt == 1,
@@ -59,40 +46,41 @@ async def generate_evaluate_regenerate(
         evaluation = await evaluate_generated_image(
             image_url=image_url,
             source_text=source_text,
-            prompt_used=current_prompt,
+            prompt_used=base_prompt,
             preview_path=preview_path,
+            slide_type=slide_type,
         )
         attempts_log.append(
             {
                 "attempt": attempt,
-                "promptUsed": current_prompt,
+                "promptUsed": base_prompt,
                 "resultImageUrl": image_url,
                 "evaluation": evaluation.to_dict(),
+                "judgeFeedback": None,
             }
         )
-        last_result = gen
-        last_eval = evaluation
-
-        if evaluation.passed or attempt >= max_attempts:
-            break
-
-        hints = build_regeneration_hints(evaluation)
-        current_prompt = _append_hints(prompt, hints)
         logger.info(
-            "Image quality below threshold (%.1f), regenerating: %s",
+            "Candidate %s score=%.1f passed=%s",
+            attempt,
             evaluation.total_score,
-            evaluation.feedback,
+            evaluation.passed,
         )
 
-    assert last_result is not None and last_eval is not None
+    best_entry = max(
+        attempts_log,
+        key=lambda item: float((item.get("evaluation") or {}).get("totalScore") or 0),
+    )
+    best_eval_raw = best_entry.get("evaluation") or {}
+
     return {
-        "taskId": str(last_result.get("taskId") or ""),
-        "resultImageUrl": str(last_result["resultImageUrl"]),
-        "originImageUrl": last_result.get("originImageUrl"),
+        "taskId": str(gen.get("taskId") or ""),
+        "resultImageUrl": str(best_entry["resultImageUrl"]),
+        "originImageUrl": gen.get("originImageUrl"),
         "mode": "generate",
-        "promptUsed": attempts_log[-1]["promptUsed"],
+        "promptUsed": base_prompt,
         "attempts": len(attempts_log),
-        "evaluation": last_eval.to_dict(),
+        "evaluation": best_eval_raw,
         "attemptsLog": attempts_log,
         "regenerated": len(attempts_log) > 1,
+        "selectedAttempt": int(best_entry.get("attempt") or 1),
     }

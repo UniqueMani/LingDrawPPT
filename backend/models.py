@@ -265,6 +265,14 @@ class DocumentStyleProfile(BaseModel):
     style_prompt_zh: str = ""
     color_palette: List[str] = Field(default_factory=list)
     negative_style: str = ""
+    color_theme: List[str] = Field(default_factory=list)
+    visual_density: str = ""
+    illustration_style: str = ""
+    illustration_level: str = ""
+    shape_language: str = ""
+    icon_style: str = ""
+    layout_style: str = ""
+    render_style: str = ""
 
 
 class SharedEntity(BaseModel):
@@ -274,6 +282,9 @@ class SharedEntity(BaseModel):
     color_hint: str = ""
     pages: List[int] = Field(default_factory=list)
     frequency: int = 0
+    entity_type: str = ""
+    importance: float = 0.0
+    relations: List[str] = Field(default_factory=list)
 
 
 class SlideVisualPlan(BaseModel):
@@ -282,6 +293,17 @@ class SlideVisualPlan(BaseModel):
     slide_role: str = ""
     visual_focus: str = ""
     entity_ids: List[str] = Field(default_factory=list)
+    topic_type: str = ""
+    content_intent: str = ""
+    visual_type: str = ""
+    page_role: str = ""
+    visual_primitives: List[str] = Field(default_factory=list)
+    focus: str = ""
+    layout: str = ""
+    related_pages: List[int] = Field(default_factory=list)
+    global_constraints: str = ""
+    page_constraints: str = ""
+    primitive_keys: List[str] = Field(default_factory=list)
 
 
 class DocumentPageInput(BaseModel):
@@ -315,6 +337,7 @@ class FluxGenerateImageRequest(BaseModel):
     prompt: str = Field("", description="直接指定 prompt（通常留空，由 selected_text 构建）")
     generation_mode: str = Field("standard", description="生成模式：standard 通用模式最多 3 次；fast 极速模式只生成 1 次")
     slide_page: int = Field(1, description="当前幻灯片页码，用于多图协同")
+    slide_type: str = Field("content", description="幻灯片类型：cover/section-divider/content，影响评分权重")
     use_doc_style: bool = Field(True, description="启用文档级统一风格约束")
     use_entity_sync: bool = Field(True, description="启用共享实体库跨页一致")
     doc_consistency: Optional[DocumentConsistencyPayload] = Field(
@@ -356,11 +379,30 @@ class ImageQualityEvaluation(BaseModel):
     feedback: str = ""
 
 
+class ImageJudgeFix(BaseModel):
+    issueArea: str
+    severity: str
+    problem: str
+    constraint: str
+    preserve: List[str] = Field(default_factory=list)
+    priority: int = 1
+
+
+class ImageJudgeFeedback(BaseModel):
+    feedbackConfidence: float
+    cannotModify: List[str] = Field(default_factory=list)
+    fixes: List[ImageJudgeFix] = Field(default_factory=list)
+    lowScoreDimensions: Dict[str, float] = Field(default_factory=dict)
+    discarded: bool = False
+    source: str = "rules"
+
+
 class ImageGenAttemptLog(BaseModel):
     attempt: int
     promptUsed: str
     resultImageUrl: str
     evaluation: ImageQualityEvaluation
+    judgeFeedback: Optional[ImageJudgeFeedback] = None
 
 
 class FluxGenerateImageResponse(BaseModel):
@@ -371,5 +413,6 @@ class FluxGenerateImageResponse(BaseModel):
     mode: str = "generate"
     attempts: int = 1
     regenerated: bool = False
+    selectedAttempt: int = 1
     evaluation: Optional[ImageQualityEvaluation] = None
     attemptsLog: List[ImageGenAttemptLog] = Field(default_factory=list)

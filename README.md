@@ -51,6 +51,8 @@ DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com
 WAN_T2I_MODEL=wan2.6-t2i
 IMAGE_EVAL_PASS_SCORE=72
 IMAGE_GEN_MAX_ATTEMPTS=3
+IMAGE_JUDGE_LOW_THRESHOLD=70
+IMAGE_JUDGE_CONFIDENCE_GATE=0.6
 APP_HOST=127.0.0.1
 APP_PORT=8000
 ```
@@ -143,15 +145,30 @@ http://localhost:5173
 
 文档级一致性 / 多图协同（文生图）：
 
-- 上传后自动 `POST /api/document/analyze-consistency`：抽取全文档 **style tokens**、**共享实体库**、每页 **slide_role**。
-- 出图时注入统一风格约束与跨页实体视觉锚点，避免「第 1 页科技蓝、第 2 页动漫、第 3 页写实」的割裂。
+- 上传后自动 `POST /api/document/analyze-consistency`，流水线：
+`Document Understanding → Visual Planner → Consistency Controller → Prompt Builder`
+- **Consistency Controller** 五层约束：
+  1. **Style**：color_theme / illustration_style / visual_density / shape_language / render_style
+  2. **Entity**：跨页 visual_anchor + 别名合并（如 CTCS / 列控系统）
+  3. **Narrative**：page_role（overview / detail / process / case / summary）
+  4. **Primitive**：train_object / workflow_arrow / architecture_block 等跨页复用
+  5. **Cross-page**：typed slide_graph（overview_to_detail / process_to_metric 等）
+- 出图时注入压缩版 consistency 后缀（`[Document Style]` / `[Current Page]` / `[Entities]`，约 150~250 tokens），避免 Prompt 过长导致约束失效。
+- **Windows 控制台乱码**：若 `chcp` 显示 `936`，Python 打印中文可能乱码；可 `chcp 65001` 或设置 `$env:PYTHONIOENCODING="utf-8"`。后端启动时会尝试将 stdout/stderr 设为 UTF-8。
 - 前端「文生图插图」可开关：统一全文档风格、多图协同（共享实体库）。
 
-配图质量流水线（`Generate → Evaluate → Regenerate`）：
+配图质量流水线（`Generate × N → Evaluate → Select Best`）：
 
-- 生成后自动评估：语义匹配、OCR 乱字、清晰度、风格一致性、与当前页一致性。
-- 综合分默认 ≥ `72`（`IMAGE_EVAL_PASS_SCORE`）为通过；未通过则自动重生成，最多 `IMAGE_GEN_MAX_ATTEMPTS` 次（默认 3）。
-- 可选 `IMAGE_EVAL_USE_VL=true` 调用 `qwen-vl-plus` 增强语义评分。
+- **通用模式**：使用同一 Prompt **独立生成 3 张候选**，分别评分后取综合分最高者（`selectedAttempt`）。不做多轮增量 Prompt 改写（PPT 信息图重绘易破坏文字与布局）。
+- **极速模式**：只生成 1 次并评分。
+- 六维评分（PPT 配图专用，按 `slide_type` 动态权重）：
+  - 语义一致性（VL 只评主题/主体/布局，**不**评文字对错；OCR 失真时会下调 VL 语义分）
+  - **文字真实性**（仅 OCR 负责；封面/分隔页权重降至 5%，精确文字应由 PPT 文本层渲染）
+  - 视觉清晰度、风格一致性（VL 分数统一归一化：0.91→91，9→90）、配色一致性、布局质量（四象限均衡+留白启发式）
+- 封面页请在「幻灯片类型」选 **cover**，或在正文中含报告人/学号等字段时自动识别。
+- 及格线默认 `72`（`IMAGE_EVAL_PASS_SCORE`）。
+- 可选 `IMAGE_EVAL_USE_VL=true` 调用 `qwen-vl-plus` 增强语义与风格评分。
+- **已知缺口**：当前为单页评分，尚未做整份 PPT（Deck-Level）跨页视觉一致性评分；后续可基于 `doc_consistency` 扩展。
 
 ## AI 使用阶段
 

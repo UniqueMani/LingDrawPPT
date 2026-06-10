@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -19,6 +20,14 @@ from backend.routers.stats import router as stats_router
 from backend.routers.upload import router as upload_router
 from backend.routers.viz_lab import router as viz_lab_router
 from backend.services.auth import ensure_admin_user, ensure_normal_user
+
+
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 
 logging.basicConfig(

@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.db import record_event
@@ -6,6 +8,8 @@ from backend.models import (
     FluxGenerateImageRequest,
     FluxGenerateImageResponse,
     ImageGenAttemptLog,
+    ImageJudgeFeedback,
+    ImageJudgeFix,
     ImageQualityDimensionScore,
     ImageQualityEvaluation,
 )
@@ -34,6 +38,36 @@ def _parse_evaluation(raw: dict) -> ImageQualityEvaluation:
         feedback=str(raw.get("feedback") or ""),
     )
 
+
+def _parse_judge_feedback(raw: Optional[dict]) -> Optional[ImageJudgeFeedback]:
+    if not isinstance(raw, dict):
+        return None
+    fixes = [
+        ImageJudgeFix(**item)
+        for item in (raw.get("fixes") or [])
+        if isinstance(item, dict)
+    ]
+    return ImageJudgeFeedback(
+        feedbackConfidence=float(raw.get("feedbackConfidence") or 0),
+        cannotModify=[str(item) for item in (raw.get("cannotModify") or [])],
+        fixes=fixes,
+        lowScoreDimensions={
+            str(key): float(value)
+            for key, value in (raw.get("lowScoreDimensions") or {}).items()
+        },
+        discarded=bool(raw.get("discarded")),
+        source=str(raw.get("source") or "rules"),
+    )
+
+
+def _parse_attempt_log(item: dict) -> ImageGenAttemptLog:
+    return ImageGenAttemptLog(
+        attempt=int(item.get("attempt") or 0),
+        promptUsed=str(item.get("promptUsed") or ""),
+        resultImageUrl=str(item.get("resultImageUrl") or ""),
+        evaluation=_parse_evaluation(item["evaluation"]),
+        judgeFeedback=_parse_judge_feedback(item.get("judgeFeedback")),
+    )
 
 @router.post("/flux/generate-image", response_model=FluxGenerateImageResponse)
 async def flux_generate_image(
@@ -80,17 +114,13 @@ async def flux_generate_image(
             prompt_extend=prompt_extend,
             generation_mode=body.generation_mode,
             preview_path=body.preview_path,
+            slide_type=body.slide_type,
         )
 
         eval_raw = result.get("evaluation") if isinstance(result.get("evaluation"), dict) else None
         evaluation = _parse_evaluation(eval_raw) if eval_raw else None
         attempts_log = [
-            ImageGenAttemptLog(
-                attempt=int(item.get("attempt") or 0),
-                promptUsed=str(item.get("promptUsed") or ""),
-                resultImageUrl=str(item.get("resultImageUrl") or ""),
-                evaluation=_parse_evaluation(item["evaluation"]),
-            )
+            _parse_attempt_log(item)
             for item in (result.get("attemptsLog") or [])
             if isinstance(item, dict) and isinstance(item.get("evaluation"), dict)
         ]
@@ -104,6 +134,7 @@ async def flux_generate_image(
             mode=str(result.get("mode") or "generate"),
             attempts=int(result.get("attempts") or 1),
             regenerated=bool(result.get("regenerated")),
+            selectedAttempt=int(result.get("selectedAttempt") or 1),
             evaluation=evaluation,
             attemptsLog=attempts_log,
         )

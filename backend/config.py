@@ -43,6 +43,13 @@ IMAGE_GEN_MAX_ATTEMPTS = int(os.getenv("IMAGE_GEN_MAX_ATTEMPTS", "3"))
 IMAGE_EVAL_USE_VL = _env_bool("IMAGE_EVAL_USE_VL", True)
 IMAGE_EVAL_VL_MODEL = os.getenv("IMAGE_EVAL_VL_MODEL", "qwen-vl-plus").strip()
 
+# 配图增量裁判（低分维度 → 结构化约束 → 下一轮 Prompt）
+IMAGE_JUDGE_USE_VL = _env_bool("IMAGE_JUDGE_USE_VL", True)
+IMAGE_JUDGE_LOW_THRESHOLD = float(os.getenv("IMAGE_JUDGE_LOW_THRESHOLD", "70"))
+IMAGE_JUDGE_CONFIDENCE_GATE = float(os.getenv("IMAGE_JUDGE_CONFIDENCE_GATE", "0.6"))
+IMAGE_JUDGE_MAX_FEEDBACK = int(os.getenv("IMAGE_JUDGE_MAX_FEEDBACK", "3"))
+IMAGE_JUDGE_MAX_FIX_TOKENS = int(os.getenv("IMAGE_JUDGE_MAX_FIX_TOKENS", "20"))
+
 APP_HOST = os.getenv("APP_HOST", "127.0.0.1").strip()
 APP_PORT = int(os.getenv("APP_PORT", "8000"))
 PREVIEW_DIR = os.getenv("PREVIEW_DIR", "backend/generated/previews").strip()
