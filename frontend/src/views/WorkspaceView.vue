@@ -261,28 +261,39 @@ function resetDocument() {
 function prevPage() {
   if (canPrev.value) {
     store.currentIndex -= 1;
-    scrollToSlide(store.currentIndex);
+    scrollToSlide(store.currentIndex, "auto");
   }
 }
 
 function nextPage() {
   if (canNext.value) {
     store.currentIndex += 1;
-    scrollToSlide(store.currentIndex);
+    scrollToSlide(store.currentIndex, "auto");
   }
 }
 
 function goToPage(i: number) {
   if (i < 0 || i >= store.slides.length) return;
   store.currentIndex = i;
-  scrollToSlide(i);
+  scrollToSlide(i, "auto");
+}
+
+function goToPageNumber(value: number | string) {
+  const page = Math.round(Number(value));
+  if (!Number.isFinite(page) || !store.slides.length) return;
+  const nextIndex = Math.min(store.slides.length - 1, Math.max(0, page - 1));
+  goToPage(nextIndex);
+}
+
+function onPageNumberInput(event: Event) {
+  goToPageNumber((event.target as HTMLInputElement).value);
 }
 
 /** 滚动到指定页面（连续阅读模式下平滑滚动） */
-function scrollToSlide(i: number) {
+function scrollToSlide(i: number, behavior: ScrollBehavior = "smooth") {
   const el = slideRefs.value[i];
   if (el && slidesViewportRef.value) {
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.scrollIntoView({ behavior, block: "start" });
   }
 }
 
@@ -1092,7 +1103,19 @@ void workflowStepClass;
                 </div>
                 <div class="tb-center">
                   <button type="button" class="tb-icon" :disabled="!canPrev" title="上一页" @click="prevPage">&lsaquo;</button>
-                  <span class="tb-page">第 {{ pageLabel }} 页</span>
+                  <label class="tb-page-jump" title="输入页码后按回车跳转">
+                    <span>第</span>
+                    <input
+                      class="tb-page-input"
+                      type="number"
+                      min="1"
+                      :max="store.slides.length"
+                      :value="store.currentIndex + 1"
+                      @change="onPageNumberInput"
+                      @keydown.enter.prevent="onPageNumberInput"
+                    />
+                    <span>/ {{ store.slides.length }} 页</span>
+                  </label>
                   <button type="button" class="tb-icon" :disabled="!canNext" title="下一页" @click="nextPage">&rsaquo;</button>
                 </div>
                 <div class="tb-zoom" aria-label="缩放">
@@ -2398,7 +2421,8 @@ void workflowStepClass;
   min-width: 0;
 }
 
-.tb-page {
+.tb-page,
+.tb-page-jump {
   flex: 1 1 auto;
   font-size: 12px;
   font-weight: 600;
@@ -2406,6 +2430,38 @@ void workflowStepClass;
   min-width: 0;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.tb-page-jump {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.tb-page-input {
+  width: 38px;
+  height: 30px;
+  padding: 0 4px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 800;
+  text-align: center;
+}
+
+.tb-page-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(139, 41, 66, 0.1);
+}
+
+.tb-page-input::-webkit-outer-spin-button,
+.tb-page-input::-webkit-inner-spin-button {
+  margin: 0;
 }
 
 .tb-icon {
@@ -3045,6 +3101,7 @@ void workflowStepClass;
 .action-command-bar .workflow-runbar-button {
   min-height: 34px;
   border-radius: 8px;
+  margin-left: auto;
 }
 
 .workflow-runbar-button:hover:not(:disabled) {

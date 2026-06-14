@@ -109,6 +109,88 @@ TEXT_FIDELITY_SKIP = frozenset(
     }
 )
 
+TEXT_ROLE_LABELS = {
+    "data_chart": "数据图",
+    "diagram": "流程/架构图",
+    "cover_text": "封面/标题页",
+    "decorative": "普通配图",
+}
+
+META_TEXT_PATTERNS = (
+    re.compile(r"\b(?:expected_intent|expected_chartType|intent|chartType)\s*[:=][^\n；;。]*", re.I),
+    re.compile(r"\b(?:comparison_grouped|comparison_bar|proportion_pie|trend_line|process_flow|hierarchy_tree|relation_sankey|data_table)\b", re.I),
+    re.compile(r"至少\s*\d+\s*个?\s*series", re.I),
+    re.compile(r"不应生成\s*[A-Za-z0-9_/-]+", re.I),
+    re.compile(r"生成提示[:：].*$", re.I | re.S),
+    re.compile(r"风格[:：].*$", re.I | re.S),
+)
+
+DATA_CHART_HINTS = (
+    "图表",
+    "数据",
+    "指标",
+    "趋势",
+    "对比",
+    "比较",
+    "营收",
+    "收入",
+    "利润",
+    "毛利",
+    "毛利率",
+    "转化率",
+    "增长率",
+    "占比",
+    "份额",
+    "同比",
+    "环比",
+    "series",
+    "chart",
+    "bar",
+    "line",
+    "pie",
+)
+
+DECORATIVE_HINTS = (
+    "配图",
+    "插画",
+    "场景",
+    "背景",
+    "概念",
+    "人物",
+    "办公室",
+    "城市",
+    "科技感",
+    "无文字",
+    "不要文字",
+    "no text",
+    "without text",
+)
+
+METRIC_TERMS = (
+    "营收",
+    "收入",
+    "销售额",
+    "利润",
+    "毛利率",
+    "毛利",
+    "转化率",
+    "增长率",
+    "达成率",
+    "占比",
+    "份额",
+    "成本",
+    "用户",
+    "活跃用户",
+    "金额",
+)
+
+WATERMARK_TERMS = ("watermark", "stock", "shutterstock", "getty", "logo", "copyright", "sample")
+
+OCR_META_PATTERNS = (
+    re.compile(r"\b(?:intent|chartType|topic|body|data_description|expected_intent|expected_chartType)\s*[:=]", re.I),
+    re.compile(r"\b(?:comparison_grouped|comparison_bar|proportion_pie|trend_line|process_flow|hierarchy_tree|relation_sankey|data_table)\b", re.I),
+)
+
 
 @dataclass
 class DimensionScore:
@@ -345,23 +427,56 @@ def _token_set(text: str) -> set[str]:
 
 
 def _ocr_on_image(image: Image.Image) -> str:
+    text, _stats = _ocr_on_image_with_stats(image)
+    return text
+
+
+def _ocr_on_image_with_stats(image: Image.Image) -> Tuple[str, Dict[str, Any]]:
     lines = []
+    confidences: List[float] = []
+    vertical_boxes = 0
+    narrow_text_boxes = 0
     try:
         result, _ = _ocr_engine()(np.asarray(image.convert("RGB")))
         for item in result or []:
             if len(item) > 1 and item[0] and str(item[1]).strip():
+                box = item[0]
+                text = str(item[1]).strip()
+                left = min(float(p[0]) for p in box)
+                top = min(float(p[1]) for p in box)
+                right = max(float(p[0]) for p in box)
+                bottom = max(float(p[1]) for p in box)
+                width = max(1.0, right - left)
+                height = max(1.0, bottom - top)
+                if len(item) > 2:
+                    try:
+                        confidences.append(float(item[2]))
+                    except Exception:
+                        pass
+                if re.search(r"[\u4e00-\u9fff]", text):
+                    if height > width * 1.45 and len(text) >= 2:
+                        vertical_boxes += 1
+                    if width / max(1, len(text)) < 12 and height > 18:
+                        narrow_text_boxes += 1
                 lines.append(
                     {
-                        "text": str(item[1]).strip(),
-                        "left": min(float(p[0]) for p in item[0]),
-                        "top": min(float(p[1]) for p in item[0]),
-                        "bottom": max(float(p[1]) for p in item[0]),
+                        "text": text,
+                        "left": left,
+                        "top": top,
+                        "bottom": bottom,
                     }
                 )
     except Exception as exc:
         logger.warning("OCR evaluate failed: %s", exc)
-        return ""
-    return _join_ocr_lines(lines).strip()
+        return "", {"confidenceAvg": None, "lowConfidenceCount": 0, "verticalBoxes": 0, "narrowTextBoxes": 0}
+    confidence_avg = sum(confidences) / len(confidences) if confidences else None
+    low_confidence_count = sum(1 for c in confidences if c < 0.72)
+    return _join_ocr_lines(lines).strip(), {
+        "confidenceAvg": confidence_avg,
+        "lowConfidenceCount": low_confidence_count,
+        "verticalBoxes": vertical_boxes,
+        "narrowTextBoxes": narrow_text_boxes,
+    }
 
 
 def _clarity_score(image: Image.Image) -> Tuple[float, str]:
@@ -546,6 +661,300 @@ def _missing_keywords(source_text: str, prompt: str, ocr_norm: str, limit: int =
     return missing
 
 
+def _strip_meta_text(text: str) -> str:
+    cleaned = text or ""
+    cleaned = re.sub(r"\b(?:topic|body|data_description)\s*[:：=]\s*", " ", cleaned, flags=re.I)
+    for pattern in META_TEXT_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"用于自动化和人工回归测试", " ", cleaned)
+    cleaned = re.sub(r"EXPECTED[:：].*$", " ", cleaned, flags=re.I | re.M)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _semantic_text_for_fidelity(source_text: str, prompt: str) -> str:
+    parts = [source_text or ""]
+    prompt_text = prompt or ""
+    content_match = re.search(r"主题与内容[:：]\s*(.+?)(?:风格[:：]|附加风格[:：]|$)", prompt_text, re.S)
+    if content_match:
+        parts.append(content_match.group(1))
+    elif not source_text:
+        parts.append(prompt_text[:500])
+    return _strip_meta_text("\n".join(parts))
+
+
+def _detect_text_role(source_text: str, prompt: str, slide_type: Optional[str]) -> str:
+    page_type = _infer_slide_type(slide_type, source_text, prompt)
+    text = f"{source_text}\n{prompt}".lower()
+    if page_type in {"cover", "section-divider"} or any(hint in text for hint in COVER_HINTS):
+        return "cover_text"
+    data_hits = sum(1 for hint in DATA_CHART_HINTS if hint.lower() in text)
+    if data_hits >= 2 or re.search(r"[A-Za-z]产品|[\u4e00-\u9fffA-Za-z0-9]+[：:]\s*-?\d", text):
+        return "data_chart"
+    if any(hint.lower() in text for hint in DIAGRAM_HINTS):
+        return "diagram"
+    if any(hint.lower() in text for hint in DECORATIVE_HINTS):
+        return "decorative"
+    if page_type == "diagram":
+        return "diagram"
+    return "decorative"
+
+
+def _dedupe_keep_order(items: List[str], limit: int = 12) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = str(item).strip()
+        if not cleaned:
+            continue
+        key = _normalize_compare_text(cleaned).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_title_anchor(text: str) -> List[str]:
+    candidates: List[str] = []
+    for pattern in (
+        r"(?:topic|标题|主题)\s*[:：]\s*([^\n；;。]{4,28})",
+        r"主题与内容[:：]\s*([^\n；;。]{4,28})",
+    ):
+        for match in re.finditer(pattern, text, re.I):
+            candidates.append(_strip_meta_text(match.group(1)))
+    first = _strip_meta_text(re.split(r"[。；;\n]", text or "", maxsplit=1)[0])
+    first = re.sub(r"^(?:标题|主题)\s*[:：]\s*", "", first).strip()
+    if re.search(r"->|=>|→", first):
+        first = ""
+    if 4 <= len(first) <= 28:
+        candidates.append(first)
+    return _dedupe_keep_order(candidates, 2)
+
+
+def _extract_data_chart_anchors(source_text: str, prompt: str) -> Dict[str, List[str]]:
+    text = _semantic_text_for_fidelity(source_text, prompt)
+    title = _extract_title_anchor(f"{source_text}\n{prompt}")
+    entities: List[str] = []
+    metrics: List[str] = []
+    values: List[str] = []
+
+    entities.extend(re.findall(r"[A-Za-z]\s*产品", text))
+    entities.extend(re.findall(r"[\u4e00-\u9fffA-Za-z0-9_-]{1,12}(?:产品|部门|地区|渠道|平台)", text))
+    product_list = re.search(r"产品\s*=\s*([A-Za-z0-9,，、\s]+)", f"{source_text}\n{prompt}")
+    if product_list:
+        entities.extend(f"{p.strip()}产品" for p in re.split(r"[,，、\s]+", product_list.group(1)) if p.strip())
+
+    for term in METRIC_TERMS:
+        if term in text:
+            metrics.append(term)
+    metric_list = re.search(r"(?:指标|metrics?)\s*[:：=]\s*([^\n；;。]+)", f"{source_text}\n{prompt}", re.I)
+    if metric_list:
+        for part in re.split(r"[,，、/;\s]+", metric_list.group(1)):
+            cleaned = part.strip()
+            if not (2 <= len(cleaned) <= 8) or "=" in cleaned:
+                continue
+            if cleaned in METRIC_TERMS or re.search(r"率|额|量|数|收入|营收|利润|成本", cleaned):
+                metrics.append(cleaned)
+
+    for raw in re.findall(r"-?\d+(?:\.\d+)?\s*%?", text):
+        token = raw.strip()
+        if token and not re.fullmatch(r"(?:19|20)\d{2}", token):
+            values.append(token)
+    return {
+        "title": _dedupe_keep_order(title, 2),
+        "entities": _dedupe_keep_order(entities, 8),
+        "metrics": _dedupe_keep_order(metrics, 8),
+        "values": _dedupe_keep_order(values, 12),
+    }
+
+
+def _extract_diagram_anchors(source_text: str, prompt: str) -> Dict[str, List[str]]:
+    text = _semantic_text_for_fidelity(source_text, prompt)
+    nodes: List[str] = []
+    if re.search(r"->|=>|→", text):
+        flow_text = re.sub(r"^.*?(?:流程|步骤|节点)\s*[:：]", "", text, count=1)
+        nodes.extend(p.strip() for p in re.split(r"->|=>|→", flow_text) if 2 <= len(p.strip()) <= 16)
+    step_match = re.search(r"(?:流程|步骤|节点|模块)\s*[:：]\s*([^\n。]+)", text)
+    if step_match:
+        nodes.extend(
+            p.strip()
+            for p in re.split(r"[,，、;；\s]+", step_match.group(1))
+            if 2 <= len(p.strip()) <= 16 and not re.fullmatch(r"[-=→>]+", p.strip())
+        )
+    nodes.extend(
+        t for t in re.findall(r"[\u4e00-\u9fff]{2,8}", text)
+        if t not in TEXT_FIDELITY_SKIP and not t.startswith(("流程", "步骤"))
+    )
+    return {
+        "title": _extract_title_anchor(text),
+        "nodes": _dedupe_keep_order(nodes, 10),
+    }
+
+
+def _match_items(items: List[str], ocr_norm: str, threshold: float = 0.70) -> Tuple[int, int, List[str]]:
+    if not items:
+        return 0, 0, []
+    hits = 0
+    missing: List[str] = []
+    for item in items:
+        norm = _normalize_compare_text(item)
+        matched = bool(norm and _best_substring_match(norm, ocr_norm) >= threshold)
+        if matched:
+            hits += 1
+        else:
+            missing.append(item)
+    return hits, len(items), missing
+
+
+def _group_score(items: List[str], ocr_norm: str, points: float, threshold: float = 0.70) -> Tuple[float, str]:
+    hits, total, missing = _match_items(items, ocr_norm, threshold)
+    if total == 0:
+        return points * 0.5, "无明确期望项，采用中性分"
+    score = points * hits / total
+    if missing:
+        return score, f"匹配 {hits}/{total}，未识别：{'、'.join(missing[:4])}"
+    return score, f"匹配 {hits}/{total}"
+
+
+def _visible_text_penalty(ocr: str) -> Tuple[float, List[str]]:
+    issues: List[str] = []
+    suspicious = len(re.findall(r"[\ufffd□■◆◇]", ocr))
+    watermark_hits = [term for term in WATERMARK_TERMS if term.lower() in (ocr or "").lower()]
+    meta_hits = [pattern.pattern for pattern in OCR_META_PATTERNS if pattern.search(ocr or "")]
+    lines = [line.strip() for line in (ocr or "").split("\n") if line.strip()]
+    duplicate_ratio = 1.0 - (len(set(lines)) / len(lines)) if len(lines) > 1 else 0.0
+    short_cjk_lines = [
+        line
+        for line in lines
+        if re.search(r"[\u4e00-\u9fff]", line) and len(_normalize_compare_text(line)) <= 2
+    ]
+    avg_line_len = sum(len(_normalize_compare_text(line)) for line in lines) / max(1, len(lines))
+    fragmented_text = len(short_cjk_lines) >= 3 or (len(lines) >= 8 and avg_line_len <= 4)
+
+    penalty = (
+        suspicious * 10.0
+        + len(watermark_hits) * 18.0
+        + len(meta_hits) * 16.0
+        + duplicate_ratio * 12.0
+    )
+    if fragmented_text:
+        penalty += min(30.0, 8.0 + len(short_cjk_lines) * 4.0)
+    if suspicious:
+        issues.append("存在不可读字符")
+    if watermark_hits:
+        issues.append("存在疑似水印/品牌字样")
+    if meta_hits:
+        issues.append("出现不应渲染的调试/元信息文字")
+    if duplicate_ratio > 0.25:
+        issues.append("存在重复文本")
+    if fragmented_text:
+        issues.append("文字可读性较差，存在竖排/断裂/过多短行")
+    return min(45.0, penalty), issues
+
+
+def _score_data_chart_text(ocr: str, source_text: str, prompt: str) -> Tuple[float, str]:
+    ocr_norm = _normalize_compare_text(ocr)
+    anchors = _extract_data_chart_anchors(source_text, prompt)
+    title_score, title_detail = _group_score(anchors["title"], ocr_norm, 15.0, 0.68)
+    entity_score, entity_detail = _group_score(anchors["entities"], ocr_norm, 20.0, 0.68)
+    metric_score, metric_detail = _group_score(anchors["metrics"], ocr_norm, 20.0, 0.68)
+    value_score, value_detail = _group_score(anchors["values"], ocr_norm, 25.0, 0.80)
+    penalty, issues = _visible_text_penalty(ocr)
+    clean_score = max(0.0, 20.0 - penalty)
+    score = max(0.0, min(100.0, title_score + entity_score + metric_score + value_score + clean_score))
+
+    expected_total = sum(len(anchors[k]) for k in ("title", "entities", "metrics", "values"))
+    if expected_total >= 4 and not issues:
+        matched = sum(_match_items(anchors[k], ocr_norm, 0.68 if k != "values" else 0.80)[0] for k in anchors)
+        if matched / expected_total >= 0.55:
+            score = max(score, 72.0)
+    if issues:
+        score = min(score, 92.0)
+
+    details = [
+        f"文字角色：{TEXT_ROLE_LABELS['data_chart']}",
+        f"标题：{title_detail}",
+        f"实体：{entity_detail}",
+        f"指标：{metric_detail}",
+        f"数值：{value_detail}",
+        "无明显乱码/水印" if not issues else "；".join(issues),
+    ]
+    return score, "；".join(details) + "。"
+
+
+def _score_diagram_text(ocr: str, source_text: str, prompt: str) -> Tuple[float, str]:
+    ocr_norm = _normalize_compare_text(ocr)
+    anchors = _extract_diagram_anchors(source_text, prompt)
+    title_score, title_detail = _group_score(anchors["title"], ocr_norm, 20.0, 0.68)
+    node_score, node_detail = _group_score(anchors["nodes"], ocr_norm, 35.0, 0.68)
+    penalty, issues = _visible_text_penalty(ocr)
+    clean_score = max(0.0, 25.0 - penalty)
+    unrelated_score = 20.0 if not issues else 12.0
+    score = max(0.0, min(100.0, title_score + node_score + clean_score + unrelated_score))
+    if not issues and anchors["nodes"]:
+        node_hits, node_total, _ = _match_items(anchors["nodes"], ocr_norm, 0.68)
+        if node_total and node_hits / node_total >= 0.5:
+            score = max(score, 70.0)
+    details = [
+        f"文字角色：{TEXT_ROLE_LABELS['diagram']}",
+        f"标题：{title_detail}",
+        f"核心节点：{node_detail}",
+        "无明显乱码/无关文字" if not issues else "；".join(issues),
+    ]
+    return score, "；".join(details) + "。"
+
+
+def _score_decorative_text(ocr: str, source_text: str, prompt: str) -> Tuple[float, str]:
+    if not ocr.strip():
+        return 96.0, f"文字角色：{TEXT_ROLE_LABELS['decorative']}；未检测到文字，该类配图不要求出现文字。"
+    penalty, issues = _visible_text_penalty(ocr)
+    ocr_norm = _normalize_compare_text(ocr)
+    semantic_text = _semantic_text_for_fidelity(source_text, prompt)
+    source_tokens = [t for t in _token_set(semantic_text) if t not in TEXT_FIDELITY_SKIP]
+    hits = 0
+    for token in source_tokens[:12]:
+        if _best_substring_match(_normalize_compare_text(token), ocr_norm) >= 0.70:
+            hits += 1
+    conflict_penalty = 0.0
+    if len(ocr_norm) > 20 and source_tokens and hits == 0:
+        conflict_penalty = 18.0
+        issues.append("出现与主题无明显关联的文字")
+    score = max(0.0, min(100.0, 92.0 - penalty - conflict_penalty))
+    detail = "；".join(issues) if issues else "无明显乱码、水印或主题冲突文字"
+    return score, f"文字角色：{TEXT_ROLE_LABELS['decorative']}；{detail}。"
+
+
+def _score_cover_text(ocr: str, source_text: str, prompt: str) -> Tuple[float, str]:
+    if not ocr.strip():
+        return 88.0, f"文字角色：{TEXT_ROLE_LABELS['cover_text']}；未检测到文字，封面精确文字建议由 PPT 文本层渲染。"
+    ocr_norm = _normalize_compare_text(ocr)
+    title_score, title_detail = _group_score(_extract_title_anchor(f"{source_text}\n{prompt}"), ocr_norm, 30.0, 0.70)
+    person_name, student_id = _extract_person_and_id(source_text, prompt)
+    person_score = 30.0
+    id_score = 25.0
+    notes: List[str] = []
+    if person_name:
+        person_match = _best_substring_match(_normalize_compare_text(person_name), ocr_norm)
+        person_score = 30.0 if person_match >= NAME_MATCH_THRESHOLD else 8.0
+        if person_match < NAME_MATCH_THRESHOLD:
+            notes.append(f"姓名/报告人匹配不足（期望 {person_name}）")
+    if student_id:
+        id_match = 1.0 if student_id in ocr else _best_substring_match(student_id, ocr_norm)
+        id_score = 25.0 if id_match >= ID_MATCH_THRESHOLD else 6.0
+        if id_match < ID_MATCH_THRESHOLD:
+            notes.append(f"编号/学号匹配不足（期望 {student_id}）")
+    penalty, issues = _visible_text_penalty(ocr)
+    clean_score = max(0.0, 15.0 - penalty)
+    score = max(0.0, min(100.0, title_score + person_score + id_score + clean_score))
+    details = [f"文字角色：{TEXT_ROLE_LABELS['cover_text']}", f"标题：{title_detail}"]
+    details.extend(notes)
+    details.append("无明显乱码/多余文字" if not issues else "；".join(issues))
+    return score, "；".join(details) + "。"
+
+
 def _build_text_fidelity_detail(
     *,
     score: float,
@@ -607,98 +1016,19 @@ def _text_fidelity_score(
     *,
     slide_type: Optional[str] = None,
 ) -> Tuple[float, str]:
-    page_type = _infer_slide_type(slide_type, source_text, prompt)
-    if page_type in {"cover", "section-divider"}:
-        return (
-            88.0,
-            "封面/分隔页：精确文字应由 PPT 文本层渲染，图片仅评估视觉主体（文字真实性权重已降低）",
-        )
-
     ocr = (ocr_text or "").strip()
-    if not ocr:
-        return 100.0, "未检测到文字，无文字失真风险"
-
-    ocr_norm = _normalize_compare_text(ocr)
-    target_norm = _normalize_compare_text("\n".join([source_text or "", prompt or ""]))
-    anchors = _extract_text_anchors(source_text, prompt)
-
-    if not target_norm and not anchors:
-        return 85.0, "源文本较短，文字真实性采用中性分"
-
-    anchor_scores = [_best_substring_match(_normalize_compare_text(a), ocr_norm) for a in anchors if a]
-    critical_anchors = [
-        a
-        for a in anchors
-        if re.search(r"[：:]", a)
-        or re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{2,}", a)
-        or re.fullmatch(r"\d{3,}", a)
-        or (re.fullmatch(r"[\u4e00-\u9fff]{2,4}", a) and a not in TEXT_FIDELITY_SKIP)
-    ]
-    critical_scores = [_best_substring_match(_normalize_compare_text(a), ocr_norm) for a in critical_anchors if a]
-    anchor_avg = sum(anchor_scores) / len(anchor_scores) if anchor_scores else 0.0
-    critical_avg = sum(critical_scores) / len(critical_scores) if critical_scores else anchor_avg
-    global_sim = _similarity_ratio(ocr_norm, target_norm) if target_norm else anchor_avg
-    coverage, cov_hits, cov_total = _keyword_coverage(source_text, prompt, ocr_norm)
-    diagram = page_type == "diagram" or _is_diagram_heavy(source_text, prompt)
-
-    if diagram:
-        base = coverage * 0.50 + anchor_avg * 0.25 + critical_avg * 0.15 + global_sim * 0.10
-    else:
-        base = coverage * 0.35 + critical_avg * 0.30 + anchor_avg * 0.20 + global_sim * 0.15
-
-    lines = [line.strip() for line in ocr.split("\n") if line.strip()]
-    duplicate_ratio = 0.0
-    if len(lines) > 1:
-        duplicate_ratio = 1.0 - (len(set(lines)) / len(lines))
-
-    suspicious = len(re.findall(r"[\ufffd□■◆◇]", ocr))
-    digit_errors = 0
-    for number in re.findall(r"\d{3,}", source_text or ""):
-        if number not in ocr and _best_substring_match(number, ocr_norm) < 0.75:
-            digit_errors += 1
-
-    penalty = duplicate_ratio * 18.0 + suspicious * 8.0 + digit_errors * 15.0
-    if critical_scores and min(critical_scores) < 0.55 and coverage < 0.55:
-        penalty += 28.0
-    elif critical_scores and critical_avg < 0.72 and coverage < 0.65:
-        penalty += 12.0
-    score = max(0.0, min(100.0, base * 100.0 - penalty))
-
-    person_name, student_id = _extract_person_and_id(source_text, prompt)
-    entity_notes: List[str] = []
-    if person_name:
-        person_match = _best_substring_match(_normalize_compare_text(person_name), ocr_norm)
-        if person_match < NAME_MATCH_THRESHOLD:
-            score *= 0.4
-            entity_notes.append(f"姓名错误（期望 {person_name}，匹配 {person_match:.0%}）")
-    if student_id:
-        id_match = 1.0 if student_id in ocr else _best_substring_match(student_id, ocr_norm)
-        if id_match < ID_MATCH_THRESHOLD:
-            score *= 0.6
-            entity_notes.append(f"编号/学号错误（期望 {student_id}，匹配 {id_match:.0%}）")
-
-    score = max(0.0, min(100.0, score))
-    if diagram and not entity_notes and suspicious == 0:
-        if coverage >= 0.70:
-            score = max(score, 68.0)
-        elif coverage >= 0.55:
-            score = max(score, 58.0)
-    score = max(0.0, min(100.0, score))
-    detail = _build_text_fidelity_detail(
-        score=score,
-        coverage=coverage,
-        cov_hits=cov_hits,
-        cov_total=cov_total,
-        diagram=diagram,
-        entity_notes=entity_notes,
-        suspicious=suspicious,
-        duplicate_ratio=duplicate_ratio,
-        digit_errors=digit_errors,
-        source_text=source_text,
-        prompt=prompt,
-        ocr_norm=ocr_norm,
-    )
-    return score, detail
+    role = _detect_text_role(source_text, prompt, slide_type)
+    if role == "data_chart":
+        if not ocr:
+            return 62.0, f"文字角色：{TEXT_ROLE_LABELS[role]}；未检测到 OCR 文字，数据图应包含核心标题、标签或数值，采用保守分。"
+        return _score_data_chart_text(ocr, source_text, prompt)
+    if role == "diagram":
+        if not ocr:
+            return 82.0, f"文字角色：{TEXT_ROLE_LABELS[role]}；未检测到文字，按无文字示意图处理，不要求覆盖正文。"
+        return _score_diagram_text(ocr, source_text, prompt)
+    if role == "cover_text":
+        return _score_cover_text(ocr, source_text, prompt)
+    return _score_decorative_text(ocr, source_text, prompt)
 
 
 def _ocr_readability_score(ocr_text: str, image: Image.Image) -> Tuple[float, str]:
@@ -713,6 +1043,29 @@ def _ocr_readability_score(ocr_text: str, image: Image.Image) -> Tuple[float, st
     score = max(0.0, min(100.0, clarity_score * 0.85 + 10.0 - penalty))
     detail = f"{clarity_detail}；检测到 {line_count} 行 OCR 文本"
     return score, detail
+
+
+def _ocr_stats_readability_penalty(stats: Dict[str, Any]) -> Tuple[float, List[str]]:
+    penalty = 0.0
+    issues: List[str] = []
+    confidence_avg = stats.get("confidenceAvg")
+    low_confidence_count = int(stats.get("lowConfidenceCount") or 0)
+    vertical_boxes = int(stats.get("verticalBoxes") or 0)
+    narrow_text_boxes = int(stats.get("narrowTextBoxes") or 0)
+
+    if isinstance(confidence_avg, (int, float)) and confidence_avg < 0.82:
+        penalty += min(22.0, (0.82 - float(confidence_avg)) * 80.0)
+        issues.append(f"OCR 平均置信度偏低（{float(confidence_avg):.0%}）")
+    if low_confidence_count:
+        penalty += min(18.0, low_confidence_count * 4.0)
+        issues.append("存在低置信度文字识别框")
+    if vertical_boxes:
+        penalty += min(24.0, vertical_boxes * 8.0)
+        issues.append("存在疑似竖排或窄高文字，影响阅读")
+    if narrow_text_boxes >= 2:
+        penalty += min(18.0, narrow_text_boxes * 4.0)
+        issues.append("部分文字框过窄，可能字号过小或笔画粘连")
+    return min(45.0, penalty), issues
 
 
 def _layout_quality_score(image: Image.Image, ocr_text: str) -> Tuple[float, str]:
@@ -976,13 +1329,23 @@ async def evaluate_generated_image(
     slide_type: Optional[str] = None,
 ) -> ImageQualityReport:
     image = await download_image(image_url)
-    ocr_text = _ocr_on_image(image)
+    ocr_text, ocr_stats = _ocr_on_image_with_stats(image)
     page_type = _infer_slide_type(slide_type, source_text, prompt_used)
     weights = _resolve_dimension_weights(slide_type, source_text, prompt_used)
 
     text_fidelity_score, text_fidelity_detail = _text_fidelity_score(
         ocr_text, source_text, prompt_used, slide_type=slide_type
     )
+    text_readability_score, text_readability_detail = _ocr_readability_score(ocr_text, image)
+    stats_penalty, stats_issues = _ocr_stats_readability_penalty(ocr_stats)
+    if ocr_text.strip() and stats_penalty > 0:
+        text_fidelity_score = max(0.0, text_fidelity_score - stats_penalty)
+        text_fidelity_detail = f"{text_fidelity_detail}；文字框可读性扣分：{'、'.join(stats_issues)}"
+    if ocr_text.strip() and text_readability_score < 82.0:
+        blended_text_score = min(text_fidelity_score, text_fidelity_score * 0.75 + text_readability_score * 0.25)
+        if blended_text_score < text_fidelity_score:
+            text_fidelity_score = blended_text_score
+            text_fidelity_detail = f"{text_fidelity_detail}；文字可读性复核：{text_readability_detail}"
 
     sem_score, sem_detail = _semantic_heuristic(source_text, prompt_used)
     vl = await _vl_semantic_boost(image_url, source_text, prompt_used)

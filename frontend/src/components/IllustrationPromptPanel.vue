@@ -44,6 +44,7 @@ const displayFluxScore = computed(() => displayFluxEvaluation.value?.totalScore 
 const displayFluxThreshold = computed(() => displayFluxEvaluation.value?.passThreshold ?? 72);
 const displayFluxPassed = computed(() => Boolean(displayFluxEvaluation.value?.passed));
 const displayFluxFeedback = computed(() => displayFluxEvaluation.value?.feedback || "");
+const displayFluxFeedbackLines = computed(() => splitEvaluationText(displayFluxFeedback.value));
 const displayFluxDimensions = computed(() => displayFluxEvaluation.value?.dimensions || []);
 const hasFluxEvaluation = computed(() => Boolean(displayFluxEvaluation.value));
 const displayFluxError = computed(() => fluxErr.value || props.fluxError || "");
@@ -56,6 +57,7 @@ const fluxScoreRows = computed(() =>
     const score = Math.max(0, Math.min(maxScore, Number(item.score) || 0));
     const deducted = item.deducted ?? Math.max(0, maxScore - score);
     const percent = maxScore > 0 ? Math.max(0, Math.min(100, (score / maxScore) * 100)) : 0;
+    const deductionLines = formatDimensionLines(item, deducted);
     return {
       ...item,
       maxScore,
@@ -63,11 +65,8 @@ const fluxScoreRows = computed(() =>
       deducted,
       percent,
       tone: scoreTone(score),
-      deductionReason:
-        item.deductionReason ||
-        (deducted > 0.5
-          ? `扣 ${deducted.toFixed(0)} 分：${item.detail || "该维度仍有优化空间。"}`
-          : "未明显扣分。"),
+      deductionReason: deductionLines.join("；"),
+      deductionLines,
     };
   })
 );
@@ -91,8 +90,8 @@ const aspectRatioOptions = [
   { value: "16:9", label: "16:9 宽屏" },
   { value: "4:3", label: "4:3 标准" },
   { value: "1:1", label: "1:1 方形" },
-  { value: "9:16", label: "9:16 绔栧睆" },
-  { value: "21:9", label: "21:9 瓒呭" },
+  { value: "9:16", label: "9:16 竖屏" },
+  { value: "21:9", label: "21:9 超宽" },
 ];
 
 function previewPathFromUrl(url?: string) {
@@ -123,6 +122,7 @@ const fluxCandidateDetails = computed(() =>
     semantic: dimensionScore(entry, "semantic_alignment"),
     layout: dimensionScore(entry, "layout_quality"),
     feedback: entry.evaluation?.feedback || "",
+    feedbackLines: splitEvaluationText(entry.evaluation?.feedback || ""),
   }))
 );
 
@@ -137,6 +137,64 @@ const fluxRoundSummaries = computed(() =>
 
 function openFluxImage(url: string) {
   if (url) window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function splitEvaluationText(text: string) {
+  const normalized = String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/[•●]/g, "；")
+    .trim();
+  if (!normalized) return [];
+
+  const roughParts = normalized
+    .split(/[；;。\n]+/)
+    .map((item) => item.trim().replace(/^[-·]\s*/, ""))
+    .filter(Boolean);
+
+  const parts: string[] = [];
+  for (const part of roughParts) {
+    if (part.length <= 72) {
+      parts.push(part);
+      continue;
+    }
+    let buffer = "";
+    for (const segment of part.split(/[，,]/).map((item) => item.trim()).filter(Boolean)) {
+      const next = buffer ? `${buffer}，${segment}` : segment;
+      if (next.length > 72 && buffer) {
+        parts.push(buffer);
+        buffer = segment;
+      } else {
+        buffer = next;
+      }
+    }
+    if (buffer) parts.push(buffer);
+  }
+  return parts;
+}
+
+function stripDeductionPrefix(text: string) {
+  return String(text || "")
+    .replace(/^[^：:]{0,16}扣\s*\d+(?:\.\d+)?\s*分[：:]\s*/, "")
+    .trim();
+}
+
+function formatDimensionLines(item: any, deducted: number) {
+  const lines: string[] = [];
+  if (deducted > 0.5) {
+    lines.push(`${item.label || "该维度"}扣 ${deducted.toFixed(0)} 分`);
+  } else {
+    lines.push("未明显扣分");
+  }
+
+  const detailText = stripDeductionPrefix(item.detail || item.deductionReason || "");
+  const detailLines = splitEvaluationText(detailText);
+  if (detailLines.length) {
+    lines.push(...detailLines);
+  } else if (deducted > 0.5) {
+    lines.push("该维度仍有优化空间");
+  }
+
+  return Array.from(new Set(lines));
 }
 
 async function rerunDocAnalysis() {
@@ -237,7 +295,7 @@ defineExpose({ runFluxGenerate });
       <div class="row2 checks config-checks">
         <label class="check">
           <input v-model="promptExtend" type="checkbox" />
-          鏅鸿兘鏀瑰啓 Prompt
+          智能改写 Prompt
         </label>
       </div>
 
@@ -348,7 +406,12 @@ defineExpose({ runFluxGenerate });
               {{ displayFluxPassed ? "通过" : "未达标" }}
             </span>
           </div>
-          <p v-if="displayFluxFeedback" class="eval-feedback">{{ displayFluxFeedback }}</p>
+          <div v-if="displayFluxFeedbackLines.length" class="eval-feedback-card">
+            <span class="eval-section-title">主要建议</span>
+            <ul class="eval-note-list">
+              <li v-for="line in displayFluxFeedbackLines" :key="line">{{ line }}</li>
+            </ul>
+          </div>
           <div v-if="fluxRoundSummaries.length > 1" class="eval-rounds">
             <span class="eval-rounds-title">各轮得分</span>
             <div class="eval-rounds-row">
@@ -363,8 +426,8 @@ defineExpose({ runFluxGenerate });
               </span>
             </div>
           </div>
-          <div v-if="fluxCandidateDetails.length > 1" class="refine-panel">
-            <span class="refine-title">候选对比（独立生成，同一 Prompt）</span>
+          <details v-if="fluxCandidateDetails.length > 1" class="refine-panel">
+            <summary class="refine-title">候选对比（独立生成，同一 Prompt）</summary>
             <article v-for="item in fluxCandidateDetails" :key="item.attempt" class="refine-step">
               <header class="refine-step-head">
                 <strong>候选 {{ item.attempt }}</strong>
@@ -378,10 +441,14 @@ defineExpose({ runFluxGenerate });
                 语义 {{ item.semantic?.toFixed(0) ?? "-" }} ·
                 布局 {{ item.layout?.toFixed(0) ?? "-" }}
               </p>
-              <p v-if="item.feedback" class="refine-next">{{ item.feedback }}</p>
+              <ul v-if="item.feedbackLines.length" class="eval-note-list compact">
+                <li v-for="line in item.feedbackLines" :key="line">{{ line }}</li>
+              </ul>
             </article>
-          </div>
-          <div v-if="fluxScoreRows.length" class="eval-list">
+          </details>
+          <details v-if="fluxScoreRows.length" class="eval-detail-panel">
+            <summary class="eval-section-title">维度评分详情</summary>
+            <div class="eval-list">
             <div v-for="item in fluxScoreRows" :key="item.key" class="eval-row">
               <div class="eval-meta">
                 <span class="eval-label">{{ item.label }}</span>
@@ -392,9 +459,12 @@ defineExpose({ runFluxGenerate });
               <div class="eval-bar" :aria-label="`${item.label} ${item.score.toFixed(0)} 分`">
                 <div class="eval-bar-fill" :class="item.tone" :style="{ width: `${item.percent}%` }" />
               </div>
-              <p class="eval-deduction">{{ item.deductionReason }}</p>
+              <ul class="eval-note-list compact">
+                <li v-for="line in item.deductionLines" :key="line">{{ line }}</li>
+              </ul>
             </div>
-          </div>
+            </div>
+          </details>
         </div>
       </div>
     </div>
@@ -737,15 +807,38 @@ label {
   color: var(--color-danger);
   border: 1px solid #fecaca;
 }
-.eval-feedback {
+.eval-feedback-card {
   margin: 0 0 var(--space-4);
   padding: var(--space-3);
   border-left: 4px solid var(--color-primary);
   border-radius: var(--radius-control);
   background: var(--color-bg-muted);
+}
+.eval-section-title {
+  display: block;
   font-size: 13px;
+  font-weight: 800;
+  color: var(--color-text);
+}
+.eval-feedback-card .eval-section-title {
+  margin-bottom: 8px;
+}
+.eval-note-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
   color: var(--color-text-soft);
+  font-size: 13px;
   line-height: 1.5;
+}
+.eval-note-list li {
+  padding-left: 2px;
+}
+.eval-note-list.compact {
+  margin-top: 8px;
+  gap: 4px;
+  font-size: 12px;
 }
 .eval-score-note {
   display: block;
@@ -789,7 +882,24 @@ label {
   padding: var(--space-3);
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-control);
-  background: #fafafa;
+  background: #fff;
+}
+.refine-panel[open] {
+  background: #fffafa;
+}
+.refine-panel summary,
+.eval-detail-panel summary {
+  cursor: pointer;
+  user-select: none;
+}
+.eval-detail-panel {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: #fff;
+}
+.eval-detail-panel[open] .eval-section-title {
+  margin-bottom: var(--space-3);
 }
 .refine-step + .refine-step {
   margin-top: var(--space-3);
@@ -851,8 +961,11 @@ label {
   flex-direction: column;
   gap: var(--space-3);
 }
+.eval-row {
+  padding: 10px 0;
+}
 .eval-row + .eval-row {
-  margin-top: 0;
+  border-top: 1px solid var(--color-border);
 }
 .eval-meta {
   display: flex;
@@ -897,12 +1010,5 @@ label {
 }
 .eval-bar-fill.low {
   background: #ef4444;
-}
-.eval-deduction {
-  margin: 6px 0 0;
-  color: var(--color-text-soft);
-  font-size: 12px;
-  line-height: 1.45;
-  word-break: break-word;
 }
 </style>
