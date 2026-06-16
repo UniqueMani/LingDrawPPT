@@ -5,15 +5,25 @@ import { store } from "../store";
 import {
   analyzeDocumentConsistency,
   extractText,
+  fetchAuthedAssetBlobUrl,
   fluxGenerateImage,
   getFileDetail,
+  insertPptImage,
+  listPageImages,
   ocrRegion,
+  recommendPptPlacement,
+  removeLastPptImage,
+  removePptImage,
+  stagePptImage,
+  updatePptImagePlacement,
+  fetchPptShapeImageBlobUrl,
   vizLabChartCode,
   vizLabIntent,
 } from "../api/client";
 import ChartIntentPanel from "../components/ChartIntentPanel.vue";
 import ChartCodePanel from "../components/ChartCodePanel.vue";
 import IllustrationPromptPanel from "../components/IllustrationPromptPanel.vue";
+import SlidePptInsertOverlay from "../components/SlidePptInsertOverlay.vue";
 import {
   beginFluxJob,
   clearFluxRuntimeState,
@@ -21,9 +31,14 @@ import {
   createFluxRequestKey,
   failFluxJob,
 } from "../utils/fluxJobManager";
+import { clampPlacementRect, INSERT_PATCH_KEY } from "../utils/pptInsert";
+import { exportEchartsOptionToPng } from "../utils/chartExport";
 import type {
   FluxGenerateImagePayload,
   FileRecord,
+  InsertImageResponse,
+  NormalizedRect,
+  PptPagePicture,
   SlideRequest,
   TextBlock,
   VizLabChartCodeResponse,
@@ -40,9 +55,64 @@ const uploadMessage = ref("");
 const openingRecentId = ref<number | null>(null);
 const recentMessage = ref("");
 const illustrationPanelRef = ref<{ runFluxGenerate: () => Promise<void> | void } | null>(null);
+const chartCodePanelRef = ref<{ exportChartPngDataUrl: () => Promise<{ dataUrl: string; aspectRatio: string } | null> } | null>(null);
 const workflowRunningStep = ref<WorkflowStep | null>(null);
 const workflowErrorStep = ref<WorkflowStep | null>(null);
 const fullWorkflowBusy = ref(false);
+
+type PptInsertActive = {
+  slideIndex: number;
+  page: number;
+  imageUrl: string;
+  displayImageUrl: string;
+  aspectRatio: string;
+  slideAspect: number;
+  placement: NormalizedRect;
+  source: "flux" | "chart";
+};
+
+type InsertedPictureEdit = {
+  shapeIndex: number;
+  displayImageUrl: string;
+  aspectRatio: string;
+  slideAspect: number;
+  placement: NormalizedRect;
+};
+
+const pptInsertActive = ref<PptInsertActive | null>(null);
+const pptInsertLoading = ref(false);
+const pptInsertSaving = ref(false);
+const insertWriteInFlight = ref(false);
+const insertFeedback = ref("");
+const pptUndoLoading = ref(false);
+const pagePictures = ref<PptPagePicture[]>([]);
+const slideAspectForPictures = ref(16 / 9);
+const pagePictureBlobUrls = ref<Record<number, string>>({});
+let pagePicturesRequestId = 0;
+let pagePicturesInflight: Promise<void> | null = null;
+let pagePicturesInflightPage = 0;
+type PagePicturesCacheEntry = {
+  pictures: PptPagePicture[];
+  aspect: number;
+  blobUrls: Record<number, string>;
+  mutationAt: number;
+  previewAt: number;
+  orphanCovers: NormalizedRect[];
+  previewDisplayUrl?: string;
+};
+const pagePicturesCache = new Map<number, PagePicturesCacheEntry>();
+let pictureSelectRequestId = 0;
+const selectedShapeIndex = ref<number | null>(null);
+const insertedEditDraft = ref<InsertedPictureEdit | null>(null);
+const insertedEditSavedPlacement = ref<NormalizedRect | null>(null);
+const orphanStalePreviewCovers = ref<NormalizedRect[]>([]);
+const lastPictureMutationAt = ref(0);
+const lastPreviewPatchAt = ref(0);
+const pendingPreviewRefreshPage = ref<number | null>(null);
+const previewRefreshInflight = new Map<number, Promise<boolean>>();
+const insertedEditSaving = ref(false);
+const pendingInsertPlacementSave = ref<NormalizedRect | null>(null);
+let insertedImageBlobUrl: string | null = null;
 
 const zoomPercent = ref(100);
 const zoomScale = computed(() => zoomPercent.value / 100);
@@ -65,6 +135,11 @@ const activeWorkflowStep = ref<WorkflowStep>("intent");
 
 const currentSlide = computed(() => store.slides[store.currentIndex] ?? null);
 const currentPreviewUrl = computed(() => currentSlide.value?.previewUrl);
+const currentSlideAspect = computed(() => {
+  const slide = currentSlide.value;
+  if (slide?.pageWidth && slide.pageHeight) return slide.pageWidth / slide.pageHeight;
+  return slideAspectForPictures.value;
+});
 const hasDoc = computed(() => store.slides.length > 0);
 const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
 const canPrev = computed(() => store.currentIndex > 0);
@@ -94,6 +169,9 @@ function clearCurrentWorkspace() {
   store.docName = "";
   store.currentFileId = 0;
   store.docConsistency = null;
+  clearPagePicturesCache();
+  pagePictures.value = [];
+  releasePagePictureBlobs();
   functionMode.value = "preview";
   activeWorkflowStep.value = "intent";
   zoomPercent.value = 100;
@@ -114,7 +192,7 @@ function exitEditor() {
 
 function resolveAssetUrl(url?: string) {
   if (!url) return "";
-  if (/^(https?:)?\/\//.test(url) || url.startsWith("data:")) return url;
+  if (/^(https?:)?\/\//.test(url) || url.startsWith("data:") || url.startsWith("blob:")) return url;
   const base = store.baseUrl.replace(/\/$/, "");
   return url.startsWith("/") ? `${base}${url}` : `${base}/${url}`;
 }
@@ -150,6 +228,8 @@ async function onPickFile(event: Event) {
       store.slides.push({
         id: `${newId()}_${p.page}`,
         page: p.page,
+        pageWidth: p.page_width ?? undefined,
+        pageHeight: p.page_height ?? undefined,
         previewUrl: resolveAssetUrl(p.preview_url),
         thumbnailUrl: resolveAssetUrl(p.thumbnail_url || p.preview_url),
         sourceTitle: p.title || `第 ${p.page} 页`,
@@ -214,6 +294,8 @@ async function openRecentFile(file: FileRecord) {
     store.slides = pages.map((page) => ({
       id: `${newId()}_${page.page}`,
       page: page.page,
+      pageWidth: page.page_width ?? undefined,
+      pageHeight: page.page_height ?? undefined,
       previewUrl: resolveAssetUrl(page.preview_url),
       thumbnailUrl: resolveAssetUrl(page.thumbnail_url || page.preview_url),
       sourceTitle: page.title || `第 ${page.page} 页`,
@@ -539,6 +621,1316 @@ function onFluxGenerateRequest(payload: FluxGenerateImagePayload) {
   void startFluxImageJob(slide.id, payload);
 }
 
+const canInsertPpt = computed(() => {
+  const name = (store.docName || "").toLowerCase();
+  return Boolean(store.currentFileId && name.endsWith(".pptx"));
+});
+
+const showPassivePictureLayer = computed(() => {
+  if (!canInsertPpt.value) return false;
+  if (pptInsertActive.value) return false;
+  const draft = insertedEditDraft.value;
+  if (draft) {
+    if (insertWriteInFlight.value || draft.shapeIndex < 0 || !previewLooksSynced()) {
+      return false;
+    }
+  }
+  return true;
+});
+
+/** Overlay 是否叠浮动图：仅 PNG 尚未烘焙该配图时 */
+const overlayShowsFloatImage = computed(() => {
+  const draft = insertedEditDraft.value;
+  if (!draft) return false;
+  if (insertWriteInFlight.value) return true;
+  if (draft.shapeIndex < 0) return true;
+  return !previewLooksSynced();
+});
+
+/** 被动层是否显示浮动图：临时 shape 或有旧位置遮罩时（PNG 未同步前） */
+const passivePictureShowsImage = computed(() => {
+  if (!pagePictures.value.length) return false;
+  const draft = insertedEditDraft.value;
+  if (draft && (insertWriteInFlight.value || draft.shapeIndex < 0 || !previewLooksSynced())) {
+    return false;
+  }
+  if (pagePictures.value.some((pic) => pic.shape_index < 0)) return true;
+  return orphanStalePreviewCovers.value.length > 0;
+});
+
+function previewLooksSynced() {
+  return lastPreviewPatchAt.value > 0 && lastPreviewPatchAt.value >= lastPictureMutationAt.value;
+}
+
+/** 被动层点击区：始终列出本页全部配图 */
+const passivePicturesForLayer = computed(() => {
+  const fromMemory = stripStaleOptimisticPictures(pagePictures.value);
+  if (fromMemory.length) return fromMemory;
+  const slide = currentSlide.value;
+  if (!slide) return [];
+  const cached = pagePicturesCache.get(slide.page);
+  return stripStaleOptimisticPictures(cached?.pictures.map((item) => ({ ...item })) ?? []);
+});
+
+/** 被动层浮动图：只渲染需要覆盖 PNG 旧烘焙的那一张 */
+function shouldShowPassiveFloat(pic: PptPagePicture): boolean {
+  if (!passivePictureShowsImage.value) return false;
+  if (pic.shape_index < 0) return true;
+  if (!orphanStalePreviewCovers.value.length) return false;
+  if (selectedShapeIndex.value != null) {
+    return pic.shape_index === selectedShapeIndex.value;
+  }
+  return true;
+}
+
+/** 遮住 PNG 里已烘焙的旧位置（仅 orphan 列表，编辑中由 Overlay 负责新位置） */
+const pngBakedMaskRects = computed(() => {
+  return orphanStalePreviewCovers.value.map((rect) => ({ ...rect }));
+});
+
+function rememberOrphanStalePreviewRegion(rect: NormalizedRect) {
+  orphanStalePreviewCovers.value = [...orphanStalePreviewCovers.value, { ...rect }];
+  markPictureLayoutDirty();
+}
+
+const hasChartResult = computed(() => {
+  const slide = currentSlide.value;
+  if (!slide) return false;
+  return Boolean(
+    slide.chartCode?.echartsOption ||
+      slide.analyze?.chart?.echartsOption ||
+      slide.chartCode?.chartJsConfig ||
+      slide.chartCode?.mermaidSource
+  );
+});
+
+const globalInsertTarget = computed<"chart" | "flux" | null>(() => {
+  const slide = currentSlide.value;
+  if (!canInsertPpt.value || !slide) return null;
+  if (activeWorkflowStep.value === "illustration" && slide.fluxImage?.resultImageUrl) return "flux";
+  if (activeWorkflowStep.value === "chart" && hasChartResult.value) return "chart";
+  if (hasChartResult.value) return "chart";
+  if (slide.fluxImage?.resultImageUrl) return "flux";
+  return null;
+});
+
+const globalInsertHint = computed(() => {
+  if (globalInsertTarget.value === "chart") return "将当前页数据图表插入 PPT";
+  if (globalInsertTarget.value === "flux") return "将当前页 AI 配图插入 PPT";
+  return "请先在右侧生成数据图表或文生图配图";
+});
+
+function appendCacheBust(url: string) {
+  if (!url) return url;
+  const base = url.split("?")[0];
+  return `${base}?t=${Date.now()}`;
+}
+
+function rememberPagePicturesCache(page: number) {
+  const slide = store.slides.find((item) => item.page === page);
+  pagePicturesCache.set(page, {
+    pictures: stripStaleOptimisticPictures(pagePictures.value).map((item) => ({ ...item })),
+    aspect: slideAspectForPictures.value,
+    blobUrls: Object.fromEntries(
+      Object.entries(pagePictureBlobUrls.value).filter(([idx]) => {
+        const shapeIndex = Number(idx);
+        return shapeIndex >= 0 || shapeIndex === activeOptimisticShapeIndex();
+      })
+    ),
+    mutationAt: lastPictureMutationAt.value,
+    previewAt: lastPreviewPatchAt.value,
+    orphanCovers: orphanStalePreviewCovers.value.map((rect) => ({ ...rect })),
+    previewDisplayUrl: slide?.previewUrl?.split("?")[0] || "",
+  });
+}
+
+function touchPagePreviewSyncInCache(page: number, previewAt: number, mutationAt = lastPictureMutationAt.value) {
+  const slide = store.slides.find((item) => item.page === page);
+  const cached = pagePicturesCache.get(page);
+  if (cached) {
+    pagePicturesCache.set(page, {
+      ...cached,
+      previewAt,
+      mutationAt,
+      orphanCovers: [],
+      previewDisplayUrl: slide?.previewUrl?.split("?")[0] || cached.previewDisplayUrl || "",
+    });
+    return;
+  }
+  pagePicturesCache.set(page, {
+    pictures: pagePictures.value.map((item) => ({ ...item })),
+    aspect: slideAspectForPictures.value,
+    blobUrls: { ...pagePictureBlobUrls.value },
+    mutationAt,
+    previewAt,
+    orphanCovers: [],
+    previewDisplayUrl: slide?.previewUrl?.split("?")[0] || "",
+  });
+}
+
+function bumpSlidePreviewDisplay(page: number) {
+  const slide = store.slides.find((item) => item.page === page);
+  if (!slide?.previewUrl) return;
+  const base = slide.previewUrl.split("?")[0];
+  const resolvedBase = resolveAssetUrl(base);
+  slide.previewUrl = appendCacheBust(resolvedBase);
+  slide.thumbnailUrl = appendCacheBust(resolvedBase.replace("/page-", "/thumb-"));
+  const cached = pagePicturesCache.get(page);
+  if (cached) {
+    pagePicturesCache.set(page, { ...cached, previewDisplayUrl: base });
+  }
+}
+
+function applyPagePicturesCache(page: number) {
+  const cached = pagePicturesCache.get(page);
+  if (!cached) {
+    pagePictures.value = [];
+    pagePictureBlobUrls.value = {};
+    lastPictureMutationAt.value = 0;
+    lastPreviewPatchAt.value = 0;
+    orphanStalePreviewCovers.value = [];
+    return false;
+  }
+  pagePictures.value = cached.pictures.map((item) => ({ ...item }));
+  pagePictures.value = stripStaleOptimisticPictures(pagePictures.value);
+  slideAspectForPictures.value = cached.aspect;
+  pagePictureBlobUrls.value = { ...cached.blobUrls };
+  lastPictureMutationAt.value = cached.mutationAt;
+  lastPreviewPatchAt.value = cached.previewAt;
+
+  const previewSynced = lastPreviewPatchAt.value > 0 && lastPreviewPatchAt.value >= lastPictureMutationAt.value;
+  orphanStalePreviewCovers.value = previewSynced
+    ? []
+    : (cached.orphanCovers || []).map((rect) => ({ ...rect }));
+
+  const slide = store.slides.find((item) => item.page === page);
+  if (slide && cached.previewDisplayUrl) {
+    slide.previewUrl = appendCacheBust(resolveAssetUrl(cached.previewDisplayUrl));
+    slide.thumbnailUrl = appendCacheBust(
+      resolveAssetUrl(cached.previewDisplayUrl).replace("/page-", "/thumb-")
+    );
+  } else if (previewSynced) {
+    bumpSlidePreviewDisplay(page);
+  }
+
+  return true;
+}
+
+function clearPagePicturesCache() {
+  pagePicturesCache.clear();
+}
+
+function isShapeIndexOnPage(shapeIndex: number) {
+  return pagePictures.value.some((item) => item.shape_index === shapeIndex);
+}
+
+function invalidateInflightPagePicturesLoad() {
+  pagePicturesRequestId += 1;
+}
+
+function activeOptimisticShapeIndex(): number | null {
+  if (!insertWriteInFlight.value || !insertedEditDraft.value) return null;
+  const idx = insertedEditDraft.value.shapeIndex;
+  return idx < 0 ? idx : null;
+}
+
+function stripStaleOptimisticPictures(pictures: PptPagePicture[]): PptPagePicture[] {
+  const activeTemp = activeOptimisticShapeIndex();
+  return pictures.filter(
+    (item) => item.shape_index >= 0 || (activeTemp != null && item.shape_index === activeTemp)
+  );
+}
+
+function purgeStaleOptimisticFromState() {
+  const activeTemp = activeOptimisticShapeIndex();
+  const removed = pagePictures.value.filter(
+    (item) => item.shape_index < 0 && item.shape_index !== activeTemp
+  );
+  if (!removed.length) return;
+  pagePictures.value = pagePictures.value.filter(
+    (item) => item.shape_index >= 0 || item.shape_index === activeTemp
+  );
+  for (const item of removed) {
+    revokePagePictureBlob(item.shape_index);
+  }
+}
+
+function mergeServerPagePictures(serverPictures: PptPagePicture[] | undefined) {
+  const server = stripStaleOptimisticPictures(
+    (serverPictures || []).map((item) => ({ ...item }))
+  );
+
+  if (insertWriteInFlight.value) {
+    const activeTemp = activeOptimisticShapeIndex();
+    if (activeTemp != null && !server.length) {
+      const temp = pagePictures.value.find((item) => item.shape_index === activeTemp);
+      if (temp) return [temp];
+    }
+  }
+
+  return server;
+}
+
+async function resolveInsertedPictureFromResult(
+  slidePage: number,
+  optimisticPicture: PptPagePicture,
+  result: InsertImageResponse
+): Promise<PptPagePicture> {
+  const direct = result.picture;
+  if (direct && direct.shape_index >= 0) {
+    return direct;
+  }
+
+  store.addLog("插入响应缺少有效 picture，正在从服务端列表补全…");
+  if (!store.currentFileId) {
+    throw new Error("插入成功但无法确认配图索引");
+  }
+
+  const resp = await listPageImages(store.baseUrl, {
+    file_id: store.currentFileId,
+    page: slidePage,
+  });
+  const candidates = stripStaleOptimisticPictures(resp.pictures || []);
+  if (!candidates.length) {
+    throw new Error("插入成功但当前页未找到配图");
+  }
+
+  const samePlacement = candidates.find(
+    (item) =>
+      Math.abs(item.x - optimisticPicture.x) < 0.02 &&
+      Math.abs(item.y - optimisticPicture.y) < 0.02
+  );
+  if (samePlacement) return samePlacement;
+
+  return candidates.reduce((best, item) => (item.shape_index > best.shape_index ? item : best));
+}
+
+function ensureOptimisticPictureOnPage(editing: InsertedPictureEdit) {
+  if (editing.shapeIndex >= 0) return;
+  if (pagePictures.value.some((item) => item.shape_index === editing.shapeIndex)) return;
+  pagePictures.value = [
+    ...pagePictures.value,
+    {
+      shape_index: editing.shapeIndex,
+      x: editing.placement.x,
+      y: editing.placement.y,
+      width: editing.placement.width,
+      height: editing.placement.height,
+      aspect_ratio: editing.aspectRatio,
+    },
+  ];
+}
+
+async function ensurePagePicturesLoaded() {
+  if (pagePictures.value.length) return;
+  if (pagePicturesInflight && pagePicturesInflightPage === currentSlide.value?.page) {
+    await pagePicturesInflight;
+    return;
+  }
+  await loadPagePictures();
+}
+
+function enterPictureEditMode(pic: PptPagePicture, shapeIndex: number, displayImageUrl = "") {
+  const placement = {
+    x: pic.x,
+    y: pic.y,
+    width: pic.width,
+    height: pic.height,
+  };
+  selectedShapeIndex.value = shapeIndex;
+  insertedEditSavedPlacement.value = { ...placement };
+  insertedEditDraft.value = {
+    shapeIndex,
+    displayImageUrl: displayImageUrl || pagePictureBlobUrls.value[shapeIndex] || "",
+    aspectRatio: pic.aspect_ratio || "16:9",
+    slideAspect: currentSlideAspect.value,
+    placement: { ...placement },
+  };
+}
+
+function reconcilePictureSelection() {
+  if (selectedShapeIndex.value == null) return;
+  if (selectedShapeIndex.value < 0 || insertWriteInFlight.value) return;
+  if (!isShapeIndexOnPage(selectedShapeIndex.value)) {
+    deselectInsertedPicture();
+  }
+}
+
+async function exportCurrentPpt() {
+  if (!store.currentFileId || !canInsertPpt.value) return;
+  store.saveCurrentWorkspaceDraft();
+  await router.push("/workspace/export");
+}
+
+async function resolveInsertImageUrl(url: string) {
+  if (url.includes("/api/ppt/staged/")) {
+    return fetchAuthedAssetBlobUrl(store.baseUrl, url);
+  }
+  return resolveAssetUrl(url);
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("读取图片失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function stageRemoteImageForInsert(imageUrl: string): Promise<string> {
+  if (!store.currentFileId) throw new Error("未选择 PPT 文件");
+  if (imageUrl.includes("/api/ppt/staged/")) return imageUrl;
+  if (imageUrl.startsWith("data:")) {
+    const staged = await stagePptImage(store.baseUrl, {
+      file_id: store.currentFileId,
+      image_data: imageUrl,
+    });
+    return staged.image_url;
+  }
+  const res = await fetch(resolveAssetUrl(imageUrl));
+  if (!res.ok) throw new Error(`下载配图失败：HTTP ${res.status}`);
+  const staged = await stagePptImage(store.baseUrl, {
+    file_id: store.currentFileId,
+    image_data: await blobToDataUrl(await res.blob()),
+  });
+  return staged.image_url;
+}
+
+function releasePagePictureBlobs() {
+  for (const url of Object.values(pagePictureBlobUrls.value)) {
+    if (url.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+    }
+  }
+  pagePictureBlobUrls.value = {};
+}
+
+function revokePagePictureBlob(shapeIndex: number) {
+  const url = pagePictureBlobUrls.value[shapeIndex];
+  if (!url) return;
+  if (url.startsWith("blob:")) {
+    URL.revokeObjectURL(url);
+  }
+  const next = { ...pagePictureBlobUrls.value };
+  delete next[shapeIndex];
+  pagePictureBlobUrls.value = next;
+}
+
+async function hydratePagePictureBlobs(page: number, pictures: PptPagePicture[], requestId: number) {
+  if (!store.currentFileId || !pictures.length) {
+    releasePagePictureBlobs();
+    return;
+  }
+
+  const previous = pagePictureBlobUrls.value;
+  const next: Record<number, string> = {};
+  const toRevoke: string[] = [];
+
+  for (const pic of pictures) {
+    const cached = previous[pic.shape_index];
+    if (cached) next[pic.shape_index] = cached;
+  }
+
+  for (const [idx, url] of Object.entries(previous)) {
+    const shapeIndex = Number(idx);
+    if (!pictures.some((pic) => pic.shape_index === shapeIndex) && url.startsWith("blob:")) {
+      toRevoke.push(url);
+    }
+  }
+
+  const missing = pictures.filter((pic) => !next[pic.shape_index]);
+  const entries = await Promise.all(
+    missing.map(async (pic) => {
+      try {
+        const url = await fetchPptShapeImageBlobUrl(store.baseUrl, {
+          file_id: store.currentFileId!,
+          page,
+          shape_index: pic.shape_index,
+        });
+        return [pic.shape_index, url] as const;
+      } catch {
+        return null;
+      }
+    })
+  );
+  if (requestId !== pagePicturesRequestId) {
+    for (const entry of entries) {
+      if (entry && !previous[entry[0]]) URL.revokeObjectURL(entry[1]);
+    }
+    return;
+  }
+
+  for (const entry of entries) {
+    if (entry) next[entry[0]] = entry[1];
+  }
+  pagePictureBlobUrls.value = next;
+  for (const url of toRevoke) URL.revokeObjectURL(url);
+
+  const editing = insertedEditDraft.value;
+  if (editing && editing.shapeIndex >= 0) {
+    const liveUrl = next[editing.shapeIndex];
+    if (liveUrl && liveUrl !== editing.displayImageUrl) {
+      editing.displayImageUrl = liveUrl;
+    }
+  }
+}
+
+function releaseInsertedImageBlob() {
+  if (insertedImageBlobUrl) {
+    URL.revokeObjectURL(insertedImageBlobUrl);
+    insertedImageBlobUrl = null;
+  }
+}
+
+function markPictureLayoutDirty() {
+  lastPictureMutationAt.value = Date.now();
+}
+
+function applySlidePreviewPatch(
+  slide: { previewUrl?: string; thumbnailUrl?: string; page?: number },
+  previewUrl?: string,
+  confirmSync = false,
+  previewUpdatedAt = 0,
+  trustPending = false
+): boolean {
+  if (!previewUrl || !confirmSync) return false;
+  const mutationAt = lastPictureMutationAt.value;
+  const previewIsFresh =
+    trustPending ||
+    (previewUpdatedAt <= 0
+      ? mutationAt <= 0
+      : previewUpdatedAt >= mutationAt - 1500);
+  if (!previewIsFresh) return false;
+
+  const nextUrl = appendCacheBust(resolveAssetUrl(previewUrl));
+  slide.previewUrl = nextUrl;
+  slide.thumbnailUrl = appendCacheBust(nextUrl.replace("/page-", "/thumb-"));
+  lastPreviewPatchAt.value = Date.now();
+  if (slide.page != null && currentSlide.value?.page === slide.page) {
+    orphanStalePreviewCovers.value = [];
+  }
+  if (slide.page != null) {
+    touchPagePreviewSyncInCache(slide.page, lastPreviewPatchAt.value);
+  }
+  return true;
+}
+
+async function fetchPagePreviewMeta(page: number) {
+  if (!store.currentFileId) {
+    return { previewUrl: "", previewUpdatedAt: 0 };
+  }
+  try {
+    const detail = await getFileDetail(store.baseUrl, store.currentFileId);
+    const pageDetail = detail.pages_detail.find((item) => item.page === page);
+    return {
+      previewUrl: pageDetail?.preview_url || "",
+      previewUpdatedAt: Number(pageDetail?.preview_updated_at || 0),
+    };
+  } catch {
+    return { previewUrl: "", previewUpdatedAt: 0 };
+  }
+}
+
+function previewMetaLooksFresh(meta: { previewUrl: string; previewUpdatedAt: number }, sawPending: boolean) {
+  if (!meta.previewUrl) return false;
+  const mutationAt = lastPictureMutationAt.value;
+  if (sawPending) return true;
+  if (meta.previewUpdatedAt > 0) return meta.previewUpdatedAt >= mutationAt;
+  return mutationAt <= 0;
+}
+
+async function refreshSlidePreviewFromServer(page: number, confirmSync = false, trustPending = false) {
+  if (!store.currentFileId) return false;
+  const slide = store.slides.find((item) => item.page === page);
+  if (!slide) return false;
+  try {
+    const detail = await getFileDetail(store.baseUrl, store.currentFileId);
+    const pageDetail = detail.pages_detail.find((item) => item.page === page);
+    if (!pageDetail?.preview_url) return false;
+    const previewUpdatedAt = Number(pageDetail.preview_updated_at || 0);
+    if (confirmSync) {
+      return applySlidePreviewPatch(
+        slide,
+        pageDetail.preview_url,
+        true,
+        previewUpdatedAt,
+        trustPending
+      );
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function enqueueSlidePreviewRefresh(page: number): Promise<boolean> {
+  const existing = previewRefreshInflight.get(page);
+  if (existing) return existing;
+  const job = waitForSlidePreviewRefresh(page).finally(() => {
+    previewRefreshInflight.delete(page);
+  });
+  previewRefreshInflight.set(page, job);
+  return job;
+}
+
+async function waitForSlidePreviewRefresh(page: number, maxAttempts = 60) {
+  if (!store.currentFileId) return false;
+  const slide = store.slides.find((item) => item.page === page);
+  if (!slide) return false;
+
+  let sawPending = false;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 800 : 1000));
+    const meta = await fetchPagePreviewMeta(page);
+    if (!meta.previewUrl) {
+      sawPending = true;
+      continue;
+    }
+    if (!previewMetaLooksFresh(meta, sawPending)) continue;
+
+    const patched = await refreshSlidePreviewFromServer(page, true, sawPending);
+    if (patched) {
+      rememberPagePicturesCache(page);
+      return true;
+    }
+  }
+
+  return previewLooksSynced();
+}
+
+function scheduleSlidePreviewRefresh(page: number) {
+  if (insertedEditDraft.value && currentSlide.value?.page === page) {
+    pendingPreviewRefreshPage.value = page;
+    return;
+  }
+  void enqueueSlidePreviewRefresh(page);
+}
+
+function runSlidePreviewRefresh(page: number) {
+  void enqueueSlidePreviewRefresh(page);
+}
+
+function flushPendingPreviewRefresh() {
+  const page = pendingPreviewRefreshPage.value;
+  if (page == null) return;
+  pendingPreviewRefreshPage.value = null;
+  void enqueueSlidePreviewRefresh(page);
+}
+
+function pictureAtNormalizedPoint(
+  x: number,
+  y: number,
+  pictures: PptPagePicture[] = pagePictures.value
+) {
+  let hit: PptPagePicture | null = null;
+  for (const pic of pictures) {
+    const pad = 0.03;
+    const left = pic.x - pad;
+    const top = pic.y - pad;
+    const right = pic.x + pic.width + pad;
+    const bottom = pic.y + pic.height + pad;
+    if (x < left || x > right || y < top || y > bottom) continue;
+    if (!hit || pic.shape_index > hit.shape_index) hit = pic;
+  }
+  return hit;
+}
+
+function shellPointFromEvent(event: PointerEvent, shell: HTMLElement) {
+  const rect = shell.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return {
+    x: (event.clientX - rect.left) / rect.width,
+    y: (event.clientY - rect.top) / rect.height,
+  };
+}
+
+async function trySelectPictureAtShellPoint(event: PointerEvent, shell: HTMLElement) {
+  if (!canInsertPpt.value || pptInsertActive.value || insertedEditDraft.value) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(".ppt-insert-overlay, .ppt-insert-box, .ppt-passive-picture-btn")) return;
+
+  const point = shellPointFromEvent(event, shell);
+  if (!point) return;
+
+  await ensurePagePicturesLoaded();
+
+  const pictures = pagePictures.value.length ? pagePictures.value : passivePicturesForLayer.value;
+  const hit = pictureAtNormalizedPoint(point.x, point.y, pictures);
+  if (!hit) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  void selectInsertedPicture(hit.shape_index);
+}
+
+function onSlideShellPointerDown(event: PointerEvent) {
+  const shell = event.currentTarget as HTMLElement;
+  const slideEl = shell.closest(".flow-slide") as HTMLElement | null;
+  const idx = Number(slideEl?.dataset.slideIndex);
+  if (!Number.isFinite(idx) || idx !== store.currentIndex) return;
+  void trySelectPictureAtShellPoint(event, shell);
+}
+
+function onPassiveLayerPointerDown(event: PointerEvent) {
+  const shell = (event.currentTarget as HTMLElement).parentElement;
+  if (!shell) return;
+  void trySelectPictureAtShellPoint(event, shell);
+}
+
+async function loadPagePictures() {
+  const slide = currentSlide.value;
+  if (!canInsertPpt.value || !store.currentFileId || !slide) {
+    pagePictures.value = [];
+    releasePagePictureBlobs();
+    return;
+  }
+
+  const targetPage = slide.page;
+  if (pagePicturesInflight && pagePicturesInflightPage === targetPage) {
+    await pagePicturesInflight;
+    return;
+  }
+
+  const requestId = ++pagePicturesRequestId;
+  pagePicturesInflightPage = targetPage;
+  pagePicturesInflight = (async () => {
+    try {
+      const resp = await listPageImages(store.baseUrl, {
+        file_id: store.currentFileId!,
+        page: targetPage,
+      });
+      if (requestId !== pagePicturesRequestId) return;
+      if (currentSlide.value?.page !== targetPage) return;
+
+      pagePictures.value = mergeServerPagePictures(resp.pictures);
+      purgeStaleOptimisticFromState();
+      slideAspectForPictures.value =
+        resp.page_width && resp.page_height
+          ? resp.page_width / resp.page_height
+          : currentSlideAspect.value;
+      if (insertedEditDraft.value) {
+        const editing = insertedEditDraft.value;
+        if (editing.shapeIndex < 0) {
+          ensureOptimisticPictureOnPage(editing);
+        } else {
+          const pic = pagePictures.value.find((item) => item.shape_index === editing.shapeIndex);
+          if (!pic && !insertWriteInFlight.value) {
+            deselectInsertedPicture();
+          }
+        }
+      }
+      reconcilePictureSelection();
+      rememberPagePicturesCache(targetPage);
+      void hydratePagePictureBlobs(targetPage, pagePictures.value, requestId).then(() => {
+        if (requestId === pagePicturesRequestId && currentSlide.value?.page === targetPage) {
+          rememberPagePicturesCache(targetPage);
+        }
+      });
+    } catch {
+      if (requestId !== pagePicturesRequestId) return;
+      if (
+        !insertedEditDraft.value &&
+        !insertWriteInFlight.value &&
+        currentSlide.value?.page === targetPage
+      ) {
+        pagePictures.value = [];
+        releasePagePictureBlobs();
+        deselectInsertedPicture();
+      }
+    } finally {
+      if (pagePicturesInflightPage === targetPage) {
+        pagePicturesInflight = null;
+      }
+    }
+  })();
+
+  await pagePicturesInflight;
+}
+
+function reconcileInsertPicture(tempShapeIndex: number, picture: PptPagePicture) {
+  invalidateInflightPagePicturesLoad();
+  const cachedUrl = pagePictureBlobUrls.value[tempShapeIndex];
+  pagePictures.value = [
+    ...pagePictures.value.filter(
+      (item) => item.shape_index !== tempShapeIndex && item.shape_index !== picture.shape_index
+    ),
+    picture,
+  ];
+  pagePictures.value = stripStaleOptimisticPictures(pagePictures.value);
+  if (cachedUrl) {
+    const next = { ...pagePictureBlobUrls.value };
+    delete next[tempShapeIndex];
+    next[picture.shape_index] = cachedUrl;
+    pagePictureBlobUrls.value = next;
+  } else {
+    revokePagePictureBlob(tempShapeIndex);
+  }
+  if (insertedEditDraft.value?.shapeIndex === tempShapeIndex) {
+    insertedEditDraft.value.shapeIndex = picture.shape_index;
+    selectedShapeIndex.value = picture.shape_index;
+    const liveUrl = pagePictureBlobUrls.value[picture.shape_index];
+    if (liveUrl) {
+      insertedEditDraft.value.displayImageUrl = liveUrl;
+    }
+    const livePlacement =
+      pendingInsertPlacementSave.value ||
+      (insertedEditDraft.value.placement ? { ...insertedEditDraft.value.placement } : null);
+    if (livePlacement) {
+      insertedEditDraft.value.placement = { ...livePlacement };
+      insertedEditSavedPlacement.value = { ...livePlacement };
+      syncPagePicturePlacement(picture.shape_index, livePlacement);
+      const synced = pagePictures.value.find((item) => item.shape_index === picture.shape_index);
+      if (synced) {
+        synced.x = livePlacement.x;
+        synced.y = livePlacement.y;
+        synced.width = livePlacement.width;
+        synced.height = livePlacement.height;
+      }
+    } else {
+      insertedEditDraft.value.placement = {
+        x: picture.x,
+        y: picture.y,
+        width: picture.width,
+        height: picture.height,
+      };
+      insertedEditSavedPlacement.value = { ...insertedEditDraft.value.placement };
+    }
+  }
+  const slide = currentSlide.value;
+  if (slide) rememberPagePicturesCache(slide.page);
+  void flushPendingInsertPlacementSave(picture);
+}
+
+async function flushPendingInsertPlacementSave(picture: PptPagePicture) {
+  const pending = pendingInsertPlacementSave.value;
+  if (!pending) return;
+  pendingInsertPlacementSave.value = null;
+
+  const baseline = {
+    x: picture.x,
+    y: picture.y,
+    width: picture.width,
+    height: picture.height,
+  };
+  const moved =
+    Math.abs(baseline.x - pending.x) > 0.001 ||
+    Math.abs(baseline.y - pending.y) > 0.001 ||
+    Math.abs(baseline.width - pending.width) > 0.001 ||
+    Math.abs(baseline.height - pending.height) > 0.001;
+  if (!moved) return;
+
+  const slide = currentSlide.value;
+  if (!slide || !store.currentFileId) return;
+
+  try {
+    const result = await updatePptImagePlacement(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+      shape_index: picture.shape_index,
+      placement: pending,
+    });
+    markPictureLayoutDirty();
+    scheduleSlidePreviewRefresh(slide.page);
+    syncPagePicturePlacement(picture.shape_index, pending);
+    if (insertedEditDraft.value?.shapeIndex === picture.shape_index) {
+      insertedEditDraft.value.placement = { ...pending };
+      insertedEditSavedPlacement.value = { ...pending };
+    }
+    rememberPagePicturesCache(slide.page);
+  } catch (e: any) {
+    store.addLog(`写入后同步配图位置失败：${e?.message || String(e)}`);
+  }
+}
+
+function registerPagePictureAfterInsert(
+  picture: PptPagePicture,
+  displayImageUrl: string,
+  slideAspect: number
+) {
+  invalidateInflightPagePicturesLoad();
+  pagePictures.value = [
+    ...pagePictures.value.filter((item) => item.shape_index !== picture.shape_index),
+    picture,
+  ];
+  pagePictureBlobUrls.value = {
+    ...pagePictureBlobUrls.value,
+    [picture.shape_index]: displayImageUrl,
+  };
+  slideAspectForPictures.value = slideAspect;
+  const slide = currentSlide.value;
+  if (slide) rememberPagePicturesCache(slide.page);
+}
+
+async function selectInsertedPicture(shapeIndex: number) {
+  const slide = currentSlide.value;
+  if (!slide || !store.currentFileId || pptInsertActive.value) return;
+  if (selectedShapeIndex.value === shapeIndex && insertedEditDraft.value) return;
+
+  if (insertedEditDraft.value && selectedShapeIndex.value !== shapeIndex) {
+    await saveInsertedPictureEdit();
+  }
+
+  if (!isShapeIndexOnPage(shapeIndex)) {
+    await loadPagePictures();
+  }
+
+  const pic = pagePictures.value.find((item) => item.shape_index === shapeIndex);
+  if (!pic) return;
+
+  clearRegionSelection(false);
+  const cachedUrl = pagePictureBlobUrls.value[shapeIndex] || "";
+  enterPictureEditMode(pic, shapeIndex, cachedUrl);
+
+  if (cachedUrl) return;
+
+  const selectId = ++pictureSelectRequestId;
+  releaseInsertedImageBlob();
+  try {
+    const displayImageUrl = await fetchPptShapeImageBlobUrl(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+      shape_index: shapeIndex,
+    });
+    if (selectId !== pictureSelectRequestId) return;
+    if (insertedEditDraft.value?.shapeIndex !== shapeIndex) return;
+    insertedImageBlobUrl = displayImageUrl;
+    insertedEditDraft.value.displayImageUrl = displayImageUrl;
+    pagePictureBlobUrls.value = {
+      ...pagePictureBlobUrls.value,
+      [shapeIndex]: displayImageUrl,
+    };
+    rememberPagePicturesCache(slide.page);
+  } catch (e: any) {
+    if (selectId !== pictureSelectRequestId) return;
+    store.addLog(`加载配图失败：${e?.message || String(e)}`);
+  }
+}
+
+function deselectInsertedPicture() {
+  pictureSelectRequestId += 1;
+  releaseInsertedImageBlob();
+  insertedEditDraft.value = null;
+  insertedEditSavedPlacement.value = null;
+  selectedShapeIndex.value = null;
+  flushPendingPreviewRefresh();
+}
+
+async function finishPictureEdit() {
+  if (pptInsertSaving.value || insertedEditSaving.value) return;
+  const slide = currentSlide.value;
+  if (insertedEditDraft.value) {
+    await saveInsertedPictureEdit();
+  }
+  deselectInsertedPicture();
+  if (slide) {
+    rememberPagePicturesCache(slide.page);
+    if (!previewLooksSynced()) {
+      insertFeedback.value = "正在后台刷新幻灯片预览...";
+      void enqueueSlidePreviewRefresh(slide.page).then(() => {
+        if (currentSlide.value?.page !== slide.page) return;
+        void loadPagePictures().then(() => rememberPagePicturesCache(slide.page));
+        insertFeedback.value = "";
+      });
+    } else {
+      orphanStalePreviewCovers.value = [];
+      rememberPagePicturesCache(slide.page);
+    }
+  }
+}
+
+async function saveInsertedPictureEdit() {
+  const draft = insertedEditDraft.value;
+  const slide = currentSlide.value;
+  if (!draft || !slide || !store.currentFileId || insertedEditSaving.value || pptInsertActive.value) return;
+
+  insertedEditSaving.value = true;
+  try {
+    const placement = clampPlacementRect(draft.placement, draft.aspectRatio, draft.slideAspect);
+    if (draft.shapeIndex < 0) {
+      pendingInsertPlacementSave.value = { ...placement };
+      syncPagePicturePlacement(draft.shapeIndex, placement);
+      if (insertedEditDraft.value) {
+        insertedEditDraft.value.placement = { ...placement };
+        insertedEditSavedPlacement.value = { ...placement };
+      }
+      rememberPagePicturesCache(slide.page);
+      return;
+    }
+
+    const previousPlacement = insertedEditSavedPlacement.value
+      ? { ...insertedEditSavedPlacement.value }
+      : { ...placement };
+    const moved =
+      Math.abs(previousPlacement.x - placement.x) > 0.001 ||
+      Math.abs(previousPlacement.y - placement.y) > 0.001 ||
+      Math.abs(previousPlacement.width - placement.width) > 0.001 ||
+      Math.abs(previousPlacement.height - placement.height) > 0.001;
+
+    const result = await updatePptImagePlacement(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+      shape_index: draft.shapeIndex,
+      placement,
+    });
+    if (moved) {
+      markPictureLayoutDirty();
+      rememberOrphanStalePreviewRegion(previousPlacement);
+    }
+    scheduleSlidePreviewRefresh(slide.page);
+    syncPagePicturePlacement(draft.shapeIndex, placement);
+    if (insertedEditDraft.value) {
+      insertedEditDraft.value.placement = { ...placement };
+      insertedEditSavedPlacement.value = { ...placement };
+    }
+    rememberPagePicturesCache(slide.page);
+    store.addLog(`第 ${slide.page} 页配图位置已保存`);
+  } catch (e: any) {
+    const message = e?.message || String(e);
+    insertFeedback.value = `保存配图位置失败：${message}`;
+    store.addLog(`更新配图失败：${message}`);
+  } finally {
+    insertedEditSaving.value = false;
+  }
+}
+
+function syncPagePicturePlacement(shapeIndex: number, placement: NormalizedRect) {
+  const pic = pagePictures.value.find((item) => item.shape_index === shapeIndex);
+  if (!pic) return;
+  pic.x = placement.x;
+  pic.y = placement.y;
+  pic.width = placement.width;
+  pic.height = placement.height;
+}
+
+async function deleteInsertedPicture() {
+  const draft = insertedEditDraft.value;
+  const slide = currentSlide.value;
+  if (!draft || !slide || !store.currentFileId) return;
+
+  const shapeIndex = draft.shapeIndex;
+  const deletedPlacement = { ...draft.placement };
+
+  deselectInsertedPicture();
+  rememberOrphanStalePreviewRegion(deletedPlacement);
+  markPictureLayoutDirty();
+  pagePictures.value = pagePictures.value.filter((item) => item.shape_index !== shapeIndex);
+  revokePagePictureBlob(shapeIndex);
+  rememberPagePicturesCache(slide.page);
+
+  insertedEditSaving.value = true;
+  try {
+    const result = await removePptImage(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+      shape_index: shapeIndex,
+    });
+    if (!result.removed) {
+      orphanStalePreviewCovers.value = [];
+      rememberPagePicturesCache(slide.page);
+      store.addLog(result.message || `第 ${slide.page} 页未找到指定配图，已刷新列表`);
+      await loadPagePictures();
+      return;
+    }
+    rememberPagePicturesCache(slide.page);
+    store.addLog(result.message || `第 ${slide.page} 页配图已删除`);
+    insertFeedback.value = "正在刷新幻灯片预览...";
+    void enqueueSlidePreviewRefresh(slide.page).then((synced) => {
+      if (currentSlide.value?.page !== slide.page) return;
+      void loadPagePictures().then(() => rememberPagePicturesCache(slide.page));
+      insertFeedback.value = synced ? "" : "预览刷新较慢，已保留遮罩直至同步完成";
+    });
+  } catch (e: any) {
+    store.addLog(`删除配图失败：${e?.message || String(e)}`);
+    orphanStalePreviewCovers.value = [];
+    rememberPagePicturesCache(slide.page);
+    await loadPagePictures();
+  } finally {
+    insertedEditSaving.value = false;
+  }
+}
+
+async function beginInlineInsert(input: {
+  imageUrl: string;
+  aspectRatio: string;
+  source: "flux" | "chart";
+}) {
+  const slide = currentSlide.value;
+  if (!slide || !store.currentFileId) return;
+  if (!canInsertPpt.value) {
+    store.addLog("仅支持 .pptx 文件插入配图/图表");
+    return;
+  }
+
+  pptInsertLoading.value = true;
+  insertFeedback.value = "";
+  clearRegionSelection(false);
+  deselectInsertedPicture();
+  try {
+    const displayImageUrl = await resolveInsertImageUrl(input.imageUrl);
+    const resp = await recommendPptPlacement(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+      image_url: input.imageUrl,
+      aspect_ratio: input.aspectRatio,
+    });
+    const slideAspect =
+      resp.page_width && resp.page_height ? resp.page_width / resp.page_height : 16 / 9;
+    pptInsertActive.value = {
+      slideIndex: store.currentIndex,
+      page: slide.page,
+      imageUrl: input.imageUrl,
+      displayImageUrl,
+      aspectRatio: input.aspectRatio,
+      slideAspect,
+      placement: clampPlacementRect(resp.recommended, input.aspectRatio, slideAspect),
+      source: input.source,
+    };
+    destroyFlowObserver();
+    await nextTick();
+    scrollToSlide(store.currentIndex);
+    store.addLog(`第 ${slide.page} 页：拖动移动 · 拖四角等比缩放 · 点 × 或按 Delete 删除 · 右侧确认插入（${input.aspectRatio}）`);
+  } catch (e: any) {
+    store.addLog(`插入预览失败：${e?.message || String(e)}`);
+  } finally {
+    pptInsertLoading.value = false;
+  }
+}
+
+function cancelPptInsert() {
+  pptInsertActive.value = null;
+  insertFeedback.value = "";
+  nextTick(() => setupFlowObserver());
+  store.addLog("已取消插入，配图未写入 PPT");
+}
+
+async function undoLastPptInsert() {
+  const slide = currentSlide.value;
+  if (!slide || !store.currentFileId || pptUndoLoading.value || pptInsertActive.value) return;
+
+  pptUndoLoading.value = true;
+  try {
+    const positivePictures = pagePictures.value.filter((item) => item.shape_index >= 0);
+    const lastPic =
+      positivePictures.length > 0
+        ? positivePictures.reduce((best, item) => (item.shape_index > best.shape_index ? item : best))
+        : null;
+
+    const result = await removeLastPptImage(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+    });
+    deselectInsertedPicture();
+    if (result.removed && lastPic) {
+      rememberOrphanStalePreviewRegion({
+        x: lastPic.x,
+        y: lastPic.y,
+        width: lastPic.width,
+        height: lastPic.height,
+      });
+      pagePictures.value = pagePictures.value
+        .filter((item) => item.shape_index >= 0 && item.shape_index !== lastPic.shape_index);
+      revokePagePictureBlob(lastPic.shape_index);
+    } else {
+      orphanStalePreviewCovers.value = [];
+      pagePictures.value = pagePictures.value.filter((item) => item.shape_index >= 0);
+    }
+    rememberPagePicturesCache(slide.page);
+    if (result.removed) {
+      markPictureLayoutDirty();
+      void enqueueSlidePreviewRefresh(slide.page).then(() => {
+        if (currentSlide.value?.page !== slide.page) return;
+        void loadPagePictures().then(() => rememberPagePicturesCache(slide.page));
+      });
+    } else {
+      await loadPagePictures();
+    }
+    store.addLog(result.message || (result.removed ? `第 ${slide.page} 页配图已撤销` : `第 ${slide.page} 页没有可撤销的配图`));
+  } catch (e: any) {
+    store.addLog(`撤销配图失败：${e?.message || String(e)}`);
+  } finally {
+    pptUndoLoading.value = false;
+  }
+}
+
+async function confirmPptInsert() {
+  const draft = pptInsertActive.value;
+  const slide = currentSlide.value;
+  if (!draft || !slide || !store.currentFileId) {
+    insertFeedback.value = "无法确认插入，请重新点击「插入到 PPT」";
+    return;
+  }
+  if (draft.slideIndex !== store.currentIndex) {
+    insertFeedback.value = "当前页已切换，请重新点击「插入到 PPT」";
+    pptInsertActive.value = null;
+    nextTick(() => setupFlowObserver());
+    return;
+  }
+  if (pptInsertSaving.value || insertWriteInFlight.value) return;
+
+  const placement = clampPlacementRect(draft.placement, draft.aspectRatio, draft.slideAspect);
+  const tempShapeIndex = -Date.now();
+  const optimisticPicture: PptPagePicture = {
+    shape_index: tempShapeIndex,
+    x: placement.x,
+    y: placement.y,
+    width: placement.width,
+    height: placement.height,
+    aspect_ratio: draft.aspectRatio,
+  };
+
+  insertFeedback.value = "正在写入 PPT...";
+  pptInsertSaving.value = true;
+  insertWriteInFlight.value = true;
+  registerPagePictureAfterInsert(optimisticPicture, draft.displayImageUrl, draft.slideAspect);
+  enterPictureEditMode(optimisticPicture, tempShapeIndex, draft.displayImageUrl);
+  pptInsertActive.value = null;
+  pptInsertSaving.value = false;
+  insertFeedback.value = "正在后台写入 PPT…";
+  nextTick(() => setupFlowObserver());
+
+  try {
+    const result = await insertPptImage(store.baseUrl, {
+      file_id: store.currentFileId,
+      page: slide.page,
+      image_url: draft.imageUrl,
+      placement,
+    });
+
+    insertWriteInFlight.value = false;
+
+    markPictureLayoutDirty();
+    const savedPicture = await resolveInsertedPictureFromResult(slide.page, optimisticPicture, result);
+    reconcileInsertPicture(tempShapeIndex, savedPicture);
+    purgeStaleOptimisticFromState();
+    rememberPagePicturesCache(slide.page);
+    insertFeedback.value = "配图已写入 PPT，点击配图可删除";
+    store.addLog(result.message || `第 ${slide.page} 页配图已写入 PPT，点击配图可删除`);
+    window.setTimeout(() => {
+      if (insertFeedback.value === "配图已写入 PPT，点击配图可删除") insertFeedback.value = "";
+    }, 4000);
+    void enqueueSlidePreviewRefresh(slide.page).then(() => {
+      if (currentSlide.value?.page !== slide.page) return;
+      void loadPagePictures().then(() => rememberPagePicturesCache(slide.page));
+    });
+  } catch (e: any) {
+    pendingInsertPlacementSave.value = null;
+    if (insertedEditDraft.value?.shapeIndex === tempShapeIndex) {
+      deselectInsertedPicture();
+    }
+    pagePictures.value = pagePictures.value.filter((item) => item.shape_index !== tempShapeIndex);
+    revokePagePictureBlob(tempShapeIndex);
+    const slideNow = currentSlide.value;
+    if (slideNow) rememberPagePicturesCache(slideNow.page);
+    const message = e?.message || String(e);
+    insertFeedback.value = `插入失败：${message}`;
+    store.addLog(`插入失败：${message}`);
+  } finally {
+    insertWriteInFlight.value = false;
+  }
+}
+
+function startInsertSession(input: {
+  imageUrl: string;
+  aspectRatio: string;
+  source: "flux" | "chart";
+}) {
+  void beginInlineInsert(input);
+}
+
+async function onInsertToPpt(payload: { aspectRatio: string }) {
+  const slide = currentSlide.value;
+  if (!slide?.fluxImage?.resultImageUrl || !store.currentFileId) return;
+  try {
+    const imageUrl = await stageRemoteImageForInsert(slide.fluxImage.resultImageUrl);
+    startInsertSession({
+      imageUrl,
+      aspectRatio: payload.aspectRatio || "16:9",
+      source: "flux",
+    });
+  } catch (e: any) {
+    store.addLog(`配图暂存失败：${e?.message || String(e)}`);
+  }
+}
+
+async function onInsertChartToPpt(payload: { dataUrl: string; aspectRatio: string }) {
+  if (!store.currentFileId) return;
+  try {
+    const staged = await stagePptImage(store.baseUrl, {
+      file_id: store.currentFileId,
+      image_data: payload.dataUrl,
+    });
+    startInsertSession({
+      imageUrl: staged.image_url,
+      aspectRatio: payload.aspectRatio || "4:3",
+      source: "chart",
+    });
+  } catch (e: any) {
+    store.addLog(`图表暂存失败：${e?.message || String(e)}`);
+  }
+}
+
+async function onGlobalInsertToPpt() {
+  if (globalInsertTarget.value === "chart") {
+    await triggerChartInsertFromHead();
+    return;
+  }
+  if (globalInsertTarget.value === "flux") {
+    triggerFluxInsertFromHead();
+  }
+}
+
+async function triggerChartInsertFromHead() {
+  let exported = await chartCodePanelRef.value?.exportChartPngDataUrl?.();
+  if (!exported) {
+    const slide = currentSlide.value;
+    const option = slide?.chartCode?.echartsOption || slide?.analyze?.chart?.echartsOption;
+    if (option) {
+      exported = await exportEchartsOptionToPng(option);
+    }
+  }
+  if (!exported) {
+    store.addLog("请先在「数据图表」中生成可预览的图表");
+    return;
+  }
+  await onInsertChartToPpt(exported);
+}
+
+function triggerFluxInsertFromHead() {
+  const slide = currentSlide.value;
+  if (!slide?.fluxImage?.resultImageUrl) {
+    store.addLog("请先在「文生图插图」中生成配图");
+    return;
+  }
+  const aspectRatio = slide.fluxAspectRatio ||
+    (illustrationPanelRef.value as { getAspectRatio?: () => string } | null)?.getAspectRatio?.() ||
+    "16:9";
+  onInsertToPpt({ aspectRatio });
+}
+
+function applyInsertPatch() {
+  const raw = sessionStorage.getItem(INSERT_PATCH_KEY);
+  if (!raw) return;
+  sessionStorage.removeItem(INSERT_PATCH_KEY);
+  try {
+    const patch = JSON.parse(raw) as {
+      fileId: number;
+      page: number;
+      previewUrl?: string;
+      thumbnailUrl?: string;
+    };
+    if (!patch.fileId || patch.fileId !== store.currentFileId) return;
+    const slide = store.slides.find((item) => item.page === patch.page);
+    if (!slide) return;
+    if (patch.previewUrl) slide.previewUrl = patch.previewUrl;
+    if (patch.thumbnailUrl) slide.thumbnailUrl = patch.thumbnailUrl;
+    store.addLog(`第 ${patch.page} 页预览已更新（配图已写入 PPT）`);
+  } catch {
+    /* ignore invalid patch */
+  }
+}
+
 async function startFluxImageJob(slideId: string, payload: FluxGenerateImagePayload) {
   const targetSlide = store.slides.find((s) => s.id === slideId);
   if (!targetSlide) return;
@@ -552,6 +1944,9 @@ async function startFluxImageJob(slideId: string, payload: FluxGenerateImagePayl
     const result = await fluxGenerateImage(store.baseUrl, payload);
     const applied = completeFluxJob(store.fluxJobs, store.slides, slideId, requestKey, result);
     if (!applied) return;
+    if (targetSlide) {
+      targetSlide.fluxAspectRatio = payload.aspect_ratio || "16:9";
+    }
 
     const score = result.evaluation?.totalScore;
     const pass = result.evaluation?.passed;
@@ -892,9 +2287,39 @@ watch(
 
 watch(
   () => store.currentIndex,
-  () => {
+  (_newIdx, oldIdx) => {
+    if (oldIdx >= 0 && oldIdx < store.slides.length) {
+      const outgoing = store.slides[oldIdx];
+      if (outgoing) rememberPagePicturesCache(outgoing.page);
+    }
+    if (pptInsertActive.value && pptInsertActive.value.slideIndex !== store.currentIndex) {
+      pptInsertActive.value = null;
+      insertFeedback.value = "";
+      nextTick(() => setupFlowObserver());
+    }
+    deselectInsertedPicture();
     clearRegionSelection();
+    const slide = currentSlide.value;
+    if (slide) {
+      applyPagePicturesCache(slide.page);
+    } else {
+      pagePictures.value = [];
+      releasePagePictureBlobs();
+      orphanStalePreviewCovers.value = [];
+    }
+    void loadPagePictures();
     nextTick(() => scrollCurrentThumbIntoView());
+  },
+);
+
+watch(
+  () => store.currentFileId,
+  () => {
+    pendingPreviewRefreshPage.value = null;
+    clearPagePicturesCache();
+    deselectInsertedPicture();
+    orphanStalePreviewCovers.value = [];
+    void loadPagePictures();
   },
 );
 
@@ -961,6 +2386,10 @@ onMounted(() => {
   nextTick(() => ensureColumnWidths(true));
   nextTick(() => setupFlowObserver());
   nextTick(() => scrollCurrentThumbIntoView());
+  applyInsertPatch();
+  const slide = currentSlide.value;
+  if (slide) applyPagePicturesCache(slide.page);
+  void loadPagePictures();
 });
 
 onBeforeUnmount(() => {
@@ -969,6 +2398,8 @@ onBeforeUnmount(() => {
   endSplitDrag();
   endCurrentInputResize();
   destroyFlowObserver();
+  deselectInsertedPicture();
+  releasePagePictureBlobs();
 });
 
 void ChartIntentPanel;
@@ -1178,6 +2609,23 @@ void workflowStepClass;
             >
               {{ regionSelectionEnabled ? "退出框选" : "框选文字" }}
             </button>
+            <button
+              v-if="canInsertPpt"
+              type="button"
+              class="reader-action-btn export-ppt-trigger"
+              title="预览并导出 PPT / PDF"
+              aria-label="导出文档"
+              @click="exportCurrentPpt"
+            >
+              导出
+            </button>
+            <p
+              v-if="canInsertPpt && insertFeedback"
+              class="reader-insert-feedback"
+              :class="{ error: insertFeedback.startsWith('插入失败') || insertFeedback.startsWith('无法') || insertFeedback.startsWith('当前页') || insertFeedback.startsWith('加载配图') }"
+            >
+              {{ insertFeedback }}
+            </p>
           </div>
           <div v-if="textPickerOpen" class="selection-popover" role="dialog" aria-label="确认提取文字">
             <div class="selection-popover-head">
@@ -1202,8 +2650,98 @@ void workflowStepClass;
                 :class="{ 'flow-slide--active': i === store.currentIndex }"
                 :data-slide-index="i"
               >
-                <div v-if="s.previewUrl" class="slide-image-shell">
-                  <img class="slide-preview-img" :src="s.previewUrl" :alt="s.input.topic" loading="lazy" />
+                <div
+                  v-if="s.previewUrl"
+                  class="slide-image-shell"
+                  :class="{
+                    'slide-image-shell--has-pictures':
+                      canInsertPpt && i === store.currentIndex,
+                  }"
+                  :style="i === store.currentIndex && currentSlideAspect ? { aspectRatio: `${currentSlideAspect}` } : undefined"
+                  @pointerdown="onSlideShellPointerDown"
+                >
+                  <img
+                    class="slide-preview-img"
+                    :key="`preview-${s.page}`"
+                    :src="s.previewUrl"
+                    :alt="s.input.topic"
+                    :loading="i === store.currentIndex ? 'eager' : 'lazy'"
+                  />
+                  <div
+                    v-if="canInsertPpt && i === store.currentIndex && pngBakedMaskRects.length"
+                    class="ppt-picture-mask-layer"
+                  >
+                    <div
+                      v-for="(rect, coverIndex) in pngBakedMaskRects"
+                      :key="`baked-mask-${coverIndex}`"
+                      class="ppt-stale-preview-cover"
+                      :style="{
+                        left: `${rect.x * 100}%`,
+                        top: `${rect.y * 100}%`,
+                        width: `${rect.width * 100}%`,
+                        height: `${rect.height * 100}%`,
+                      }"
+                    />
+                  </div>
+                  <div
+                    v-if="canInsertPpt && !pptInsertActive && i === store.currentIndex && showPassivePictureLayer"
+                    class="ppt-passive-picture-layer"
+                    @pointerdown="onPassiveLayerPointerDown"
+                  >
+                    <!-- passivePictureShowsImage 仅控制浮动图，不控制本层 v-if -->
+                    <button
+                      v-for="(pic, picIndex) in passivePicturesForLayer"
+                      :key="`passive-${pic.shape_index}`"
+                      type="button"
+                      class="ppt-passive-picture-btn"
+                      :class="{
+                        'ppt-passive-picture-btn--synced-hit':
+                          previewLooksSynced() &&
+                          !insertedEditDraft &&
+                          orphanStalePreviewCovers.length === 0,
+                      }"
+                      :style="{
+                        left: `${pic.x * 100}%`,
+                        top: `${pic.y * 100}%`,
+                        width: `${pic.width * 100}%`,
+                        height: `${pic.height * 100}%`,
+                        zIndex: 10 + picIndex,
+                      }"
+                      :title="`点击编辑配图 ${pic.shape_index + 1}`"
+                      @pointerdown.stop.prevent="selectInsertedPicture(pic.shape_index)"
+                      @click.stop.prevent="selectInsertedPicture(pic.shape_index)"
+                    >
+                      <img
+                        v-if="shouldShowPassiveFloat(pic) && pagePictureBlobUrls[pic.shape_index]"
+                        class="ppt-passive-picture-img"
+                        :src="pagePictureBlobUrls[pic.shape_index]"
+                        :alt="`配图 ${pic.shape_index + 1}`"
+                        draggable="false"
+                      />
+                    </button>
+                  </div>
+                  <SlidePptInsertOverlay
+                    v-if="insertedEditDraft && !pptInsertActive && i === store.currentIndex"
+                    v-model:placement="insertedEditDraft.placement"
+                    :image-url="insertedEditDraft.displayImageUrl"
+                    :aspect-ratio="insertedEditDraft.aspectRatio"
+                    :slide-aspect="insertedEditDraft.slideAspect"
+                    label="已插入配图"
+                    :movable="false"
+                    :show-image="overlayShowsFloatImage"
+                    :saving="insertWriteInFlight"
+                    @remove="deleteInsertedPicture"
+                  />
+                  <SlidePptInsertOverlay
+                    v-if="pptInsertActive && i === store.currentIndex"
+                    v-model:placement="pptInsertActive.placement"
+                    :image-url="pptInsertActive.displayImageUrl"
+                    :aspect-ratio="pptInsertActive.aspectRatio"
+                    :slide-aspect="pptInsertActive.slideAspect"
+                    :label="pptInsertActive.source === 'flux' ? 'AI 配图' : '数据图表'"
+                    :saving="pptInsertSaving"
+                    @remove="cancelPptInsert"
+                  />
                   <div
                     v-if="regionSelectionEnabled && i === store.currentIndex"
                     class="region-selection-overlay"
@@ -1298,6 +2836,76 @@ void workflowStepClass;
               >
                 &lsaquo;
               </button>
+              <div v-if="canInsertPpt" class="action-top-insert">
+                <p v-if="insertFeedback" class="action-insert-feedback" :class="{ error: insertFeedback.startsWith('插入失败') || insertFeedback.startsWith('无法') || insertFeedback.startsWith('当前页') }">
+                  {{ insertFeedback }}
+                </p>
+                <template v-if="pptInsertActive">
+                  <span class="action-insert-hint">拖动移动 · 拖角缩放 · × 删除</span>
+                  <button type="button" class="action-insert-btn outline" :disabled="pptInsertSaving" @click.stop="cancelPptInsert">
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    class="action-insert-btn solid"
+                    :disabled="pptInsertSaving"
+                    @click.stop="confirmPptInsert"
+                  >
+                    <span v-if="pptInsertSaving" class="btn-spinner wine-spin"></span>
+                    {{ pptInsertSaving ? "写入中..." : "确认插入" }}
+                  </button>
+                </template>
+                <template v-else-if="insertedEditDraft">
+                  <span class="action-insert-hint">
+                    {{ insertWriteInFlight ? "正在后台写入 PPT…" : "已选中配图 · 点击 × 删除" }}
+                  </span>
+                  <button
+                    type="button"
+                    class="action-insert-btn outline"
+                    :disabled="pptInsertSaving || insertedEditSaving"
+                    @click.stop="finishPictureEdit"
+                  >
+                    <span v-if="insertedEditSaving" class="btn-spinner wine-spin"></span>
+                    完成
+                  </button>
+                </template>
+                <template v-else>
+                  <span v-if="pagePictures.length" class="action-insert-hint">点击幻灯片中的配图可删除</span>
+                  <button
+                    type="button"
+                    class="action-insert-btn outline"
+                    :disabled="pptUndoLoading"
+                    title="删除本页最后插入的一张配图"
+                    aria-label="撤销本页配图"
+                    @click="undoLastPptInsert"
+                  >
+                    <span v-if="pptUndoLoading" class="btn-spinner wine-spin"></span>
+                    撤销配图
+                  </button>
+                  <button
+                    type="button"
+                    class="action-insert-btn outline"
+                    :disabled="pptUndoLoading"
+                    title="预览并导出 PPT / PDF"
+                    aria-label="导出文档"
+                    @click="exportCurrentPpt"
+                  >
+                    导出
+                  </button>
+                  <button
+                    type="button"
+                    class="action-insert-btn solid"
+                    :class="{ ready: Boolean(globalInsertTarget) }"
+                    :disabled="!globalInsertTarget || pptInsertLoading"
+                    :title="globalInsertHint"
+                    aria-label="插入到 PPT"
+                    @click="onGlobalInsertToPpt"
+                  >
+                    <span v-if="pptInsertLoading" class="btn-spinner wine-spin"></span>
+                    插入到 PPT
+                  </button>
+                </template>
+              </div>
             </header>
 
             <div class="workflow-runbar action-command-bar">
@@ -1381,6 +2989,7 @@ void workflowStepClass;
                 </div>
                 <ChartCodePanel
                   v-if="currentSlide"
+                  ref="chartCodePanelRef"
                   v-model:slide="currentSlide.input"
                   hide-slide-input
                   :initial-result="currentSlide.chartCode || null"
@@ -1438,6 +3047,7 @@ void workflowStepClass;
           />
           <ChartCodePanel
             v-if="functionMode === 'code' && currentSlide"
+            ref="chartCodePanelRef"
             v-model:slide="currentSlide.input"
             :initial-result="currentSlide.chartCode || null"
             :initial-echarts-option="currentSlide.analyze?.chart?.echartsOption || null"
@@ -1916,7 +3526,29 @@ void workflowStepClass;
   z-index: 12;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
+  max-width: min(560px, calc(100% - 96px));
+}
+
+.reader-insert-feedback {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(74, 144, 255, 0.35);
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  box-shadow: var(--shadow-card);
+}
+
+.reader-insert-feedback.error {
+  border-color: rgba(185, 28, 28, 0.35);
+  color: #b91c1c;
 }
 
 .reader-action-btn {
@@ -1935,6 +3567,33 @@ void workflowStepClass;
 }
 
 .reader-action-btn:hover,
+.reader-action-btn:focus-visible {
+  background: var(--color-primary-soft);
+}
+
+.reader-action-btn.insert-ppt-trigger.ready {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.reader-action-btn.insert-ppt-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  border-color: var(--color-border);
+}
+
+.reader-action-btn.export-ppt-trigger {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.reader-action-btn.export-ppt-trigger:disabled {
+  opacity: 0.55;
+}
 .selection-trigger.active {
   background: var(--color-primary);
   color: #fff;
@@ -2067,18 +3726,126 @@ void workflowStepClass;
 .slide-image-shell {
   position: relative;
   display: inline-flex;
+  width: 100%;
   max-width: 100%;
+}
+
+.ppt-passive-picture-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: auto;
+  cursor: default;
+  touch-action: manipulation;
+}
+
+.slide-image-shell--has-pictures .slide-preview-img {
+  pointer-events: none;
+  user-select: none;
+}
+
+.slide-image-shell--hide-stale-preview .slide-preview-img {
+  visibility: hidden;
+}
+
+.slide-image-shell--hide-stale-preview {
+  background: #fff;
+}
+
+.ppt-picture-mask-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.ppt-stale-preview-cover {
+  position: absolute;
+  box-sizing: border-box;
+  z-index: 1;
+  background: #fff;
+  pointer-events: none;
+}
+
+.ppt-stale-preview-cover--edit {
+  z-index: 2;
+  box-shadow: inset 0 0 0 1px rgba(74, 144, 255, 0.08);
+}
+
+.ppt-passive-picture-btn {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px dashed rgba(74, 144, 255, 0.35);
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.ppt-passive-picture-btn:hover,
+.ppt-passive-picture-btn:focus-visible {
+  border-color: rgba(74, 144, 255, 0.95);
+  box-shadow: 0 0 0 1px rgba(74, 144, 255, 0.35), 0 8px 20px rgba(74, 144, 255, 0.18);
+}
+
+.ppt-passive-picture-btn--synced-hint {
+  border-color: rgba(74, 144, 255, 0.72);
+  border-width: 2px;
+  background: rgba(74, 144, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  min-width: 28px;
+  min-height: 28px;
+}
+
+.ppt-passive-picture-btn--synced-hit {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.ppt-passive-picture-btn--synced-hit:hover,
+.ppt-passive-picture-btn--synced-hit:focus-visible {
+  border-color: rgba(74, 144, 255, 0.72);
+  border-width: 2px;
+  background: rgba(74, 144, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+}
+
+.ppt-passive-picture-btn--synced-hint::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ppt-passive-picture-img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  display: block;
+  pointer-events: none;
+  background: #fff;
 }
 
 .flow-slide .slide-preview-img {
   display: block;
-  max-width: 100%;
-  height: auto;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   background: var(--color-surface);
   border: 1px solid #d8d1d4;
   border-radius: 4px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
   animation: panel-in var(--motion-slow) var(--motion-ease) both;
+}
+
+.flow-slide .slide-image-shell--has-pictures .slide-preview-img {
+  object-fit: fill;
 }
 
 .region-selection-overlay {
@@ -2780,10 +4547,78 @@ void workflowStepClass;
 }
 
 .action-top-bar {
-  display: none;
-  align-items: flex-start;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   min-width: 0;
+  padding: 2px 0 4px;
+}
+
+.action-top-insert {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.action-insert-feedback {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1.4;
+}
+
+.action-insert-feedback.error {
+  color: #b91c1c;
+}
+
+.action-insert-hint {
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.action-insert-btn {
+  min-width: 88px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-card);
+}
+
+.action-insert-btn.solid {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.action-insert-btn.outline:hover,
+.action-insert-btn.outline:focus-visible {
+  background: var(--color-primary-soft);
+}
+
+.action-insert-btn.solid.ready,
+.action-insert-btn.solid:not(:disabled):hover,
+.action-insert-btn.solid:not(:disabled):focus-visible {
+  filter: brightness(1.03);
+}
+
+.action-insert-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
 }
 
 .action-top-bar .collapse-toggle--compact {
@@ -3227,6 +5062,19 @@ void workflowStepClass;
 .workflow-panel-head .fn-title {
   color: var(--color-primary);
   font-weight: 900;
+}
+
+.workflow-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn.primary.compact {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
 }
 
 .btn.compact {

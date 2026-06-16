@@ -28,6 +28,16 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: "/workspace/insert",
+    redirect: "/workspace",
+  },
+  {
+    path: "/workspace/export",
+    name: "WorkspaceExport",
+    component: () => import("../views/ExportView.vue"),
+    meta: { requiresAuth: true },
+  },
+  {
     path: "/profile",
     name: "Profile",
     component: () => import("../views/ProfileView.vue"),

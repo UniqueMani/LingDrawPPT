@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -416,3 +418,111 @@ class FluxGenerateImageResponse(BaseModel):
     selectedAttempt: int = 1
     evaluation: Optional[ImageQualityEvaluation] = None
     attemptsLog: List[ImageGenAttemptLog] = Field(default_factory=list)
+
+
+class NormalizedRect(BaseModel):
+    x: float = Field(..., ge=0, le=1)
+    y: float = Field(..., ge=0, le=1)
+    width: float = Field(..., gt=0, le=1)
+    height: float = Field(..., gt=0, le=1)
+
+
+class RecommendPlacementRequest(BaseModel):
+    file_id: int
+    page: int = Field(..., ge=1)
+    image_url: str
+    aspect_ratio: str = "16:9"
+
+
+class RecommendPlacementResponse(BaseModel):
+    recommended: NormalizedRect
+    occupied_blocks: List[Dict[str, Any]] = Field(default_factory=list)
+    preview_url: str = ""
+    page_width: Optional[float] = None
+    page_height: Optional[float] = None
+
+
+class InsertImageRequest(BaseModel):
+    file_id: int
+    page: int = Field(..., ge=1)
+    image_url: str
+    placement: NormalizedRect
+
+
+class InsertImageResponse(BaseModel):
+    ok: bool = True
+    page: int
+    preview_url: str = ""
+    download_url: str = ""
+    message: str = ""
+    picture: Optional[PptPagePicture] = None
+
+
+class StageImageRequest(BaseModel):
+    file_id: int
+    image_data: str = Field(..., description="PNG data URL 或 Base64")
+
+
+class StageImageResponse(BaseModel):
+    image_url: str
+
+
+class RemoveLastImageRequest(BaseModel):
+    file_id: int
+    page: int = Field(..., ge=1)
+
+
+class RemoveLastImageResponse(BaseModel):
+    ok: bool = True
+    page: int
+    removed: bool = False
+    preview_url: str = ""
+    message: str = ""
+
+
+class PptPagePicture(BaseModel):
+    shape_index: int
+    x: float
+    y: float
+    width: float
+    height: float
+    aspect_ratio: str = "16:9"
+
+
+class ListPageImagesRequest(BaseModel):
+    file_id: int
+    page: int = Field(..., ge=1)
+
+
+class ListPageImagesResponse(BaseModel):
+    pictures: List[PptPagePicture] = Field(default_factory=list)
+    page_width: Optional[float] = None
+    page_height: Optional[float] = None
+
+
+class UpdateImagePlacementRequest(BaseModel):
+    file_id: int
+    page: int = Field(..., ge=1)
+    shape_index: int = Field(..., ge=0)
+    placement: NormalizedRect
+
+
+class UpdateImagePlacementResponse(BaseModel):
+    ok: bool = True
+    page: int
+    preview_url: str = ""
+    message: str = ""
+
+
+class RemoveImageRequest(BaseModel):
+    file_id: int
+    page: int = Field(..., ge=1)
+    shape_index: int = Field(..., ge=0)
+
+
+class RemoveImageResponse(BaseModel):
+    ok: bool = True
+    page: int
+    removed: bool = False
+    preview_url: str = ""
+    message: str = ""

@@ -15,6 +15,7 @@ from backend.routers.auth import router as auth_router
 from backend.routers.doc_consistency import router as doc_consistency_router
 from backend.routers.flux_image import router as flux_image_router
 from backend.routers.illustration import router as illustration_router
+from backend.routers.ppt_insert import router as ppt_insert_router
 from backend.routers.ocr import router as ocr_router
 from backend.routers.stats import router as stats_router
 from backend.routers.upload import router as upload_router
@@ -52,6 +53,7 @@ app.include_router(illustration_router, prefix="/api", tags=["illustration"])
 app.include_router(flux_image_router, prefix="/api", tags=["flux"])
 app.include_router(doc_consistency_router, prefix="/api", tags=["document"])
 app.include_router(upload_router, prefix="/api", tags=["upload"])
+app.include_router(ppt_insert_router, prefix="/api", tags=["ppt"])
 app.include_router(ocr_router, prefix="/api", tags=["ocr"])
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(admin_router, prefix="/api", tags=["admin"])
