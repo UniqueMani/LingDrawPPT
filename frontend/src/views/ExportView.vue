@@ -13,20 +13,18 @@ const exportLoading = ref(false);
 const exportMessage = ref("");
 const zoomPercent = ref(100);
 
-const slidesViewportRef = ref<HTMLElement | null>(null);
-const slideRefs = ref<(HTMLElement | null)[]>([]);
 const pageThumbRefs = ref<(HTMLElement | null)[]>([]);
-let flowObserver: IntersectionObserver | null = null;
-const flowIntersectionRatios = new Map<Element, number>();
-let scrollSyncLock = false;
-let observerSetupTimer: number | null = null;
+let wheelDelta = 0;
+let wheelResetTimer: number | null = null;
+let lastWheelSwitchAt = 0;
 
 const hasDoc = computed(() => store.slides.length > 0);
 const isPptx = computed(() => (store.docName || "").toLowerCase().endsWith(".pptx"));
+const currentSlide = computed(() => store.slides[store.currentIndex] || null);
 const pageLabel = computed(() => `${store.currentIndex + 1} / ${store.slides.length}`);
 const canPrev = computed(() => store.currentIndex > 0);
 const canNext = computed(() => store.currentIndex < store.slides.length - 1);
-const zoomScale = computed(() => zoomPercent.value / 100);
+const previewWidth = computed(() => `${zoomPercent.value}%`);
 
 function defaultStem() {
   return (store.docName || "document").replace(/\.(pptx|pdf)$/i, "").trim() || "document";
@@ -76,10 +74,6 @@ async function refreshPreviewFromServer() {
   }
 }
 
-function setSlideRef(el: unknown, i: number) {
-  slideRefs.value[i] = (el as HTMLElement | null) ?? null;
-}
-
 function setPageThumbRef(el: unknown, i: number) {
   pageThumbRefs.value[i] = (el as HTMLElement | null) ?? null;
 }
@@ -90,25 +84,9 @@ function scrollCurrentThumbIntoView() {
   thumb.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
 }
 
-function scrollToSlide(i: number) {
-  scrollSyncLock = true;
-  const el = slideRefs.value[i];
-  const viewport = slidesViewportRef.value;
-  if (el && viewport) {
-    const viewportRect = viewport.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const top = viewport.scrollTop + (elRect.top - viewportRect.top) - 20;
-    viewport.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-  }
-  window.setTimeout(() => {
-    scrollSyncLock = false;
-  }, 700);
-}
-
 function goToPage(index: number) {
   if (index < 0 || index >= store.slides.length) return;
   store.currentIndex = index;
-  scrollToSlide(index);
   nextTick(() => scrollCurrentThumbIntoView());
 }
 
@@ -120,54 +98,25 @@ function nextPage() {
   goToPage(store.currentIndex + 1);
 }
 
-function destroyFlowObserver() {
-  if (flowObserver) {
-    flowObserver.disconnect();
-    flowObserver = null;
-  }
-  flowIntersectionRatios.clear();
-}
+function onPreviewWheel(event: WheelEvent) {
+  if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  event.preventDefault();
 
-function setupFlowObserver() {
-  destroyFlowObserver();
-  if (!slidesViewportRef.value) return;
-  const observer = new IntersectionObserver(
-    (entries) => {
-      if (scrollSyncLock) return;
-      for (const entry of entries) {
-        flowIntersectionRatios.set(entry.target, entry.intersectionRatio);
-      }
-      let bestTarget: Element | null = null;
-      let bestRatio = 0;
-      for (const [target, ratio] of flowIntersectionRatios) {
-        if (ratio > bestRatio) {
-          bestTarget = target;
-          bestRatio = ratio;
-        }
-      }
-      if (bestTarget && bestRatio > 0.15) {
-        const idx = Number((bestTarget as HTMLElement).dataset.slideIndex);
-        if (!isNaN(idx) && idx >= 0 && idx < store.slides.length && idx !== store.currentIndex) {
-          store.currentIndex = idx;
-        }
-      }
-    },
-    { root: slidesViewportRef.value, threshold: [0, 0.15, 0.35, 0.55, 0.75, 1] }
-  );
-  slideRefs.value.forEach((el) => el && observer.observe(el));
-  flowObserver = observer;
-}
+  const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
+  wheelDelta += delta;
+  if (wheelResetTimer) window.clearTimeout(wheelResetTimer);
+  wheelResetTimer = window.setTimeout(() => {
+    wheelDelta = 0;
+    wheelResetTimer = null;
+  }, 180);
 
-function scheduleFlowObserverSetup() {
-  if (observerSetupTimer) window.clearTimeout(observerSetupTimer);
-  observerSetupTimer = window.setTimeout(() => {
-    observerSetupTimer = null;
-    nextTick(() => setupFlowObserver());
-  }, 80);
-}
+  const now = Date.now();
+  if (Math.abs(wheelDelta) < 70 || now - lastWheelSwitchAt < 420) return;
 
-function onSlideImageLoad() {
-  scheduleFlowObserverSetup();
+  if (wheelDelta > 0 && canNext.value) nextPage();
+  if (wheelDelta < 0 && canPrev.value) prevPage();
+  wheelDelta = 0;
+  lastWheelSwitchAt = now;
 }
 
 function backToWorkspace() {
@@ -207,13 +156,6 @@ watch(
   () => nextTick(() => scrollCurrentThumbIntoView())
 );
 
-watch(
-  () => store.slides.length,
-  () => scheduleFlowObserverSetup()
-);
-
-watch(zoomPercent, () => scheduleFlowObserverSetup());
-
 onMounted(async () => {
   if (!hasDoc.value || !store.currentFileId) {
     await router.replace("/workspace");
@@ -223,13 +165,11 @@ onMounted(async () => {
   exportFilenameInput.value = withExportExtension(defaultStem(), exportFormat.value);
   await refreshPreviewFromServer();
   await nextTick();
-  scheduleFlowObserverSetup();
   scrollCurrentThumbIntoView();
 });
 
 onBeforeUnmount(() => {
-  if (observerSetupTimer) window.clearTimeout(observerSetupTimer);
-  destroyFlowObserver();
+  if (wheelResetTimer) window.clearTimeout(wheelResetTimer);
 });
 </script>
 
@@ -244,7 +184,7 @@ onBeforeUnmount(() => {
         <div class="export-topbar-divider" aria-hidden="true"></div>
         <div class="export-topbar-title">
           <strong>导出文档</strong>
-          <span class="export-topbar-sub">连续滚动预览全部页面，选择格式后下载</span>
+          <span class="export-topbar-sub">预览当前页面，确认格式与文件名后下载</span>
         </div>
       </div>
       <span v-if="store.docName" class="export-source-name" :title="store.docName">{{ store.docName }}</span>
@@ -284,38 +224,29 @@ onBeforeUnmount(() => {
 
       <section class="export-preview" aria-label="文档预览">
         <div class="export-preview-toolbar">
-          <span>连续阅读预览</span>
+          <span>单页预览 · 第 {{ pageLabel }} 页</span>
           <label class="zoom-control">
             <span>缩放</span>
             <input v-model.number="zoomPercent" type="range" min="50" max="200" step="1" />
             <span>{{ zoomPercent }}%</span>
           </label>
         </div>
-        <div ref="slidesViewportRef" class="export-preview-viewport export-preview-viewport--flow">
-          <div class="export-slide-stage" :style="{ transform: 'scale(' + zoomScale + ')' }">
-            <div
-              v-for="(s, i) in store.slides"
-              :key="s.id"
-              :ref="(el) => setSlideRef(el, i)"
-              class="flow-slide"
-              :class="{ 'flow-slide--active': i === store.currentIndex }"
-              :data-slide-index="i"
-            >
+        <div class="export-preview-viewport" title="向上或向下滚动切换页面" @wheel="onPreviewWheel">
+          <Transition name="export-page" mode="out-in">
+            <div v-if="currentSlide" :key="currentSlide.id" class="export-slide-stage" :style="{ width: previewWidth }">
               <img
-                v-if="s.previewUrl"
+                v-if="currentSlide.previewUrl"
                 class="export-slide-img"
-                :src="s.previewUrl"
-                :alt="s.input.topic"
-                loading="lazy"
-                @load="onSlideImageLoad"
+                :src="currentSlide.previewUrl"
+                :alt="currentSlide.input.topic"
               />
               <article v-else class="export-slide-fallback">
-                <h2>{{ s.input.topic || ("第 " + (i + 1) + " 页") }}</h2>
-                <p>{{ s.input.body || "本页暂无可用预览。" }}</p>
+                <h2>{{ currentSlide.input.topic || ("第 " + (store.currentIndex + 1) + " 页") }}</h2>
+                <p>{{ currentSlide.input.body || "本页暂无可用预览。" }}</p>
               </article>
-              <span class="flow-slide-label">{{ i + 1 }} / {{ store.slides.length }}</span>
+              <span class="export-slide-label">{{ pageLabel }}</span>
             </div>
-          </div>
+          </Transition>
         </div>
       </section>
 
@@ -370,7 +301,8 @@ onBeforeUnmount(() => {
 .export-root {
   flex: 1;
   min-height: 0;
-  height: 100%;
+  height: calc(100dvh - 70px);
+  max-height: calc(100dvh - 70px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -504,6 +436,22 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 41, 66, 0.42) rgba(139, 41, 66, 0.08);
+}
+
+.page-thumbs-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.page-thumbs-scroll::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(139, 41, 66, 0.08);
+}
+
+.page-thumbs-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(139, 41, 66, 0.42);
 }
 
 .export-panel-body {
@@ -621,64 +569,33 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-.export-preview-viewport--flow {
+.export-preview-viewport {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
   padding: clamp(20px, 4vw, 56px);
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
+  background: #f4f2f3;
 }
 
 .export-slide-stage {
-  transform-origin: top center;
-  width: 100%;
-  max-width: min(960px, 100%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0;
-}
-
-.flow-slide {
   position: relative;
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  padding: 32px 0;
-  border-bottom: 1px dashed transparent;
-  transition: border-color 0.3s;
+  min-width: 360px;
+  max-width: none;
+  margin: 0 auto;
 }
 
-.flow-slide--active {
-  border-bottom-color: var(--color-primary-border);
-}
-
-.flow-slide-label {
+.export-slide-label {
   position: absolute;
-  right: 8px;
-  bottom: 40px;
-  padding: 2px 10px;
+  right: 12px;
+  bottom: 12px;
+  padding: 4px 11px;
   border-radius: 999px;
-  background: rgba(139, 41, 66, 0.08);
-  color: var(--color-primary);
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.flow-slide:hover .flow-slide-label,
-.flow-slide--active .flow-slide-label {
-  opacity: 1;
-}
-
-.flow-slide--active .flow-slide-label {
   background: var(--color-primary);
   color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 12px rgba(139, 41, 66, 0.18);
 }
 
 .export-slide-img {
@@ -710,6 +627,21 @@ onBeforeUnmount(() => {
   margin: 0;
   color: var(--color-muted);
   line-height: 1.6;
+}
+
+.export-page-enter-active,
+.export-page-leave-active {
+  transition: opacity var(--motion-base), transform var(--motion-base);
+}
+
+.export-page-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.export-page-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .section-kicker {
@@ -808,6 +740,31 @@ onBeforeUnmount(() => {
 
 .export-btn {
   width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-control);
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(139, 41, 66, 0.16);
+  transition: background var(--motion-base), border-color var(--motion-base), transform var(--motion-base), box-shadow var(--motion-base);
+}
+
+.export-btn:hover:not(:disabled),
+.export-btn:focus-visible:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(139, 41, 66, 0.22);
+}
+
+.export-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .export-message {

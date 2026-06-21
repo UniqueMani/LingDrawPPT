@@ -1219,10 +1219,6 @@ function scheduleSlidePreviewRefresh(page: number) {
   void enqueueSlidePreviewRefresh(page);
 }
 
-function runSlidePreviewRefresh(page: number) {
-  void enqueueSlidePreviewRefresh(page);
-}
-
 function flushPendingPreviewRefresh() {
   const page = pendingPreviewRefreshPage.value;
   if (page == null) return;
@@ -1436,7 +1432,7 @@ async function flushPendingInsertPlacementSave(picture: PptPagePicture) {
   if (!slide || !store.currentFileId) return;
 
   try {
-    const result = await updatePptImagePlacement(store.baseUrl, {
+    await updatePptImagePlacement(store.baseUrl, {
       file_id: store.currentFileId,
       page: slide.page,
       shape_index: picture.shape_index,
@@ -1579,7 +1575,7 @@ async function saveInsertedPictureEdit() {
       Math.abs(previousPlacement.width - placement.width) > 0.001 ||
       Math.abs(previousPlacement.height - placement.height) > 0.001;
 
-    const result = await updatePptImagePlacement(store.baseUrl, {
+    await updatePptImagePlacement(store.baseUrl, {
       file_id: store.currentFileId,
       page: slide.page,
       shape_index: draft.shapeIndex,
@@ -2849,88 +2845,6 @@ void workflowStepClass;
           </template>
 
           <div v-else class="action-workspace">
-            <header class="action-top-bar">
-              <button
-                type="button"
-                class="collapse-toggle collapse-toggle--compact action-top-collapse"
-                title="收起功能面板"
-                aria-label="收起功能面板"
-                @click="toggleRightCollapsed"
-              >
-                &lsaquo;
-              </button>
-              <div v-if="canInsertPpt" class="action-top-insert">
-                <p v-if="insertFeedback" class="action-insert-feedback" :class="{ error: insertFeedback.startsWith('插入失败') || insertFeedback.startsWith('无法') || insertFeedback.startsWith('当前页') }">
-                  {{ insertFeedback }}
-                </p>
-                <template v-if="pptInsertActive">
-                  <span class="action-insert-hint">拖动移动 · 拖角缩放 · × 删除</span>
-                  <button type="button" class="action-insert-btn outline" :disabled="pptInsertSaving" @click.stop="cancelPptInsert">
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    class="action-insert-btn solid"
-                    :disabled="pptInsertSaving"
-                    @click.stop="confirmPptInsert"
-                  >
-                    <span v-if="pptInsertSaving" class="btn-spinner wine-spin"></span>
-                    {{ pptInsertSaving ? "写入中..." : "确认插入" }}
-                  </button>
-                </template>
-                <template v-else-if="insertedEditDraft">
-                  <span class="action-insert-hint">
-                    {{ insertWriteInFlight ? "正在后台写入 PPT…" : "已选中配图 · 点击 × 删除" }}
-                  </span>
-                  <button
-                    type="button"
-                    class="action-insert-btn outline"
-                    :disabled="pptInsertSaving || insertedEditSaving"
-                    @click.stop="finishPictureEdit"
-                  >
-                    <span v-if="insertedEditSaving" class="btn-spinner wine-spin"></span>
-                    完成
-                  </button>
-                </template>
-                <template v-else>
-                  <span v-if="pagePictures.length" class="action-insert-hint">点击幻灯片中的配图可删除</span>
-                  <button
-                    type="button"
-                    class="action-insert-btn outline"
-                    :disabled="pptUndoLoading"
-                    title="删除本页最后插入的一张配图"
-                    aria-label="撤销本页配图"
-                    @click="undoLastPptInsert"
-                  >
-                    <span v-if="pptUndoLoading" class="btn-spinner wine-spin"></span>
-                    撤销配图
-                  </button>
-                  <button
-                    type="button"
-                    class="action-insert-btn outline"
-                    :disabled="pptUndoLoading"
-                    title="预览并导出 PPT / PDF"
-                    aria-label="导出文档"
-                    @click="exportCurrentPpt"
-                  >
-                    导出
-                  </button>
-                  <button
-                    type="button"
-                    class="action-insert-btn solid"
-                    :class="{ ready: Boolean(globalInsertTarget) }"
-                    :disabled="!globalInsertTarget || pptInsertLoading"
-                    :title="globalInsertHint"
-                    aria-label="插入到 PPT"
-                    @click="onGlobalInsertToPpt"
-                  >
-                    <span v-if="pptInsertLoading" class="btn-spinner wine-spin"></span>
-                    插入到 PPT
-                  </button>
-                </template>
-              </div>
-            </header>
-
             <div class="workflow-runbar action-command-bar">
               <button
                 type="button"
@@ -3048,7 +2962,82 @@ void workflowStepClass;
                   :flux-loading="currentSlide.statusFluxImage === 'loading'"
                   :flux-error="currentSlide.errorFluxImage || ''"
                   @flux-generate-request="onFluxGenerateRequest"
-                />
+                >
+                  <template #image-actions>
+                  <div v-if="canInsertPpt" class="illustration-result-actions">
+                  <p v-if="insertFeedback" class="action-insert-feedback" :class="{ error: insertFeedback.startsWith('插入失败') || insertFeedback.startsWith('无法') || insertFeedback.startsWith('当前页') }">
+                    {{ insertFeedback }}
+                  </p>
+                  <div class="illustration-result-actions-row">
+                    <template v-if="pptInsertActive">
+                      <span class="action-insert-hint">拖动移动 · 拖角缩放 · × 删除</span>
+                      <button type="button" class="action-insert-btn outline" :disabled="pptInsertSaving" @click.stop="cancelPptInsert">
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        class="action-insert-btn solid"
+                        :disabled="pptInsertSaving"
+                        @click.stop="confirmPptInsert"
+                      >
+                        <span v-if="pptInsertSaving" class="btn-spinner wine-spin"></span>
+                        {{ pptInsertSaving ? "写入中..." : "确认插入" }}
+                      </button>
+                    </template>
+                    <template v-else-if="insertedEditDraft">
+                      <span class="action-insert-hint">
+                        {{ insertWriteInFlight ? "正在后台写入 PPT…" : "已选中配图 · 点击 × 删除" }}
+                      </span>
+                      <button
+                        type="button"
+                        class="action-insert-btn outline"
+                        :disabled="pptInsertSaving || insertedEditSaving"
+                        @click.stop="finishPictureEdit"
+                      >
+                        <span v-if="insertedEditSaving" class="btn-spinner wine-spin"></span>
+                        完成
+                      </button>
+                    </template>
+                    <template v-else>
+                      <span v-if="pagePictures.length" class="action-insert-hint">点击幻灯片中的配图可删除</span>
+                      <button
+                        type="button"
+                        class="action-insert-btn outline"
+                        :disabled="pptUndoLoading"
+                        title="删除本页最后插入的一张配图"
+                        aria-label="撤销本页配图"
+                        @click="undoLastPptInsert"
+                      >
+                        <span v-if="pptUndoLoading" class="btn-spinner wine-spin"></span>
+                        撤销配图
+                      </button>
+                      <button
+                        type="button"
+                        class="action-insert-btn outline"
+                        :disabled="pptUndoLoading"
+                        title="预览并导出 PPT / PDF"
+                        aria-label="导出文档"
+                        @click="exportCurrentPpt"
+                      >
+                        导出
+                      </button>
+                      <button
+                        type="button"
+                        class="action-insert-btn solid"
+                        :class="{ ready: Boolean(globalInsertTarget) }"
+                        :disabled="!globalInsertTarget || pptInsertLoading"
+                        :title="globalInsertHint"
+                        aria-label="插入到 PPT"
+                        @click="onGlobalInsertToPpt"
+                      >
+                        <span v-if="pptInsertLoading" class="btn-spinner wine-spin"></span>
+                        插入到 PPT
+                      </button>
+                    </template>
+                  </div>
+                  </div>
+                  </template>
+                </IllustrationPromptPanel>
               </section>
             </div>
           </div>
@@ -3560,13 +3549,13 @@ void workflowStepClass;
   margin: 0;
   padding: 6px 10px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(74, 144, 255, 0.35);
+  background: linear-gradient(135deg, rgba(255, 250, 251, 0.98), rgba(247, 237, 240, 0.96));
+  border: 1px solid var(--color-primary-border);
   color: var(--color-primary);
   font-size: 12px;
   font-weight: 700;
   line-height: 1.4;
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 6px 18px rgba(139, 41, 66, 0.1);
 }
 
 .reader-insert-feedback.error {
@@ -4596,7 +4585,7 @@ void workflowStepClass;
   flex: 1 1 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 8px;
   padding: 8px 10px 10px;
   background: var(--color-surface);
@@ -4675,6 +4664,29 @@ void workflowStepClass;
   opacity: 0.45;
   cursor: not-allowed;
   filter: none;
+}
+
+.illustration-result-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, rgba(255, 250, 251, 0.98), rgba(247, 237, 240, 0.86));
+}
+
+.illustration-result-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.illustration-result-actions-row .action-insert-hint {
+  margin-right: auto;
 }
 
 .action-top-bar .collapse-toggle--compact {

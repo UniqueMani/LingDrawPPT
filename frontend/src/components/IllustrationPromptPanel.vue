@@ -195,6 +195,7 @@ function formatDimensionLines(item: any, deducted: number) {
   }
 
   return Array.from(new Set(lines));
+}
 
 async function rerunDocAnalysis() {
   if (!store.slides.length) return;
@@ -238,6 +239,10 @@ function runFluxGenerate() {
     prompt_extend: promptExtend.value,
     extra_style_words: extraStyleWords.value.trim() || null,
   });
+}
+
+function getAspectRatio() {
+  return aspectRatio.value;
 }
 
 defineExpose({ runFluxGenerate, getAspectRatio });
@@ -393,6 +398,7 @@ defineExpose({ runFluxGenerate, getAspectRatio });
           @click="openFluxImage(displayFluxImageUrl)"
         />
         <a class="link" :href="displayFluxImageUrl" target="_blank" rel="noopener noreferrer">点击下载</a>
+        <slot name="image-actions" />
 
         <div v-if="hasFluxEvaluation" class="eval-panel">
           <div class="eval-summary">
