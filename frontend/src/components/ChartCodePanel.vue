@@ -5,6 +5,7 @@ import mermaid from "mermaid";
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { store } from "../store";
 import { vizLabChartCode } from "../api/client";
+import { inferAspectRatio } from "../utils/pptInsert";
 import SlideInputForm from "./SlideInputForm.vue";
 import type { SlideRequest, VizLabChartCodeResponse } from "../types";
 
@@ -240,6 +241,67 @@ onBeforeUnmount(() => {
   destroyChartJs();
   destroyEcharts();
 });
+
+function exportChartPngDataUrl(): Promise<{ dataUrl: string; aspectRatio: string } | null> {
+  if (echartsInstance && displayEchartsOption.value) {
+    const dom = echartsEl.value;
+    const width = dom?.clientWidth || 800;
+    const height = dom?.clientHeight || 420;
+    return Promise.resolve({
+      dataUrl: echartsInstance.getDataURL({
+        type: "png",
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+      }),
+      aspectRatio: inferAspectRatio(width, height),
+    });
+  }
+  const canvas = chartJsCanvas.value;
+  if (chartJsInstance && canvas) {
+    return Promise.resolve({
+      dataUrl: canvas.toDataURL("image/png"),
+      aspectRatio: inferAspectRatio(canvas.width || 420, canvas.height || 260),
+    });
+  }
+  const svg = mermaidHost.value?.querySelector("svg");
+  if (svg instanceof SVGElement) {
+    return svgToPngDataUrl(svg);
+  }
+  return Promise.resolve(null);
+}
+
+async function svgToPngDataUrl(svg: SVGElement) {
+  const box = svg.getBoundingClientRect();
+  const width = Math.max(320, Math.round(box.width || 640));
+  const height = Math.max(180, Math.round(box.height || 360));
+  const xml = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = width * 2;
+    canvas.height = height * 2;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return {
+      dataUrl: canvas.toDataURL("image/png"),
+      aspectRatio: inferAspectRatio(width, height),
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+defineExpose({ exportChartPngDataUrl });
 </script>
 
 <template>

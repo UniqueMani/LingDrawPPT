@@ -22,6 +22,14 @@ import type {
   AnalyzeDocumentResponse,
   FluxGenerateImagePayload,
   FluxGenerateImageResponse,
+  InsertImageResponse,
+  ListPageImagesResponse,
+  NormalizedRect,
+  RecommendPlacementResponse,
+  RemoveImageResponse,
+  RemoveLastImageResponse,
+  StageImageResponse,
+  UpdateImagePlacementResponse,
 } from "../types";
 
 let authToken = "";
@@ -202,6 +210,31 @@ export async function downloadFile(baseUrl: string, fileId: number, filename: st
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
   const res = await fetch(`${b}/api/files/${fileId}/download`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`HTTP ${res.status}: ${t}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function exportDocumentFile(
+  baseUrl: string,
+  fileId: number,
+  filename: string,
+  format: "pptx" | "pdf"
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const params = new URLSearchParams({ format });
+  const res = await fetch(`${b}/api/files/${fileId}/export?${params.toString()}`, {
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
   });
   if (!res.ok) {
@@ -419,5 +452,93 @@ export async function postStatsEvent(baseUrl: string, eventType: string) {
   const b = normalizeBaseUrl(baseUrl);
   if (!b) throw new Error("baseUrl 为空");
   return await postJSON<{ ok: boolean }>(`${b}/api/stats/event`, { event_type: eventType });
+}
+
+export async function recommendPptPlacement(
+  baseUrl: string,
+  payload: { file_id: number; page: number; image_url: string; aspect_ratio?: string }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<RecommendPlacementResponse>(`${b}/api/ppt/recommend-placement`, payload);
+}
+
+export async function insertPptImage(
+  baseUrl: string,
+  payload: { file_id: number; page: number; image_url: string; placement: NormalizedRect }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<InsertImageResponse>(`${b}/api/ppt/insert-image`, payload);
+}
+
+export async function removeLastPptImage(
+  baseUrl: string,
+  payload: { file_id: number; page: number }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<RemoveLastImageResponse>(`${b}/api/ppt/remove-last-image`, payload);
+}
+
+export async function listPageImages(baseUrl: string, payload: { file_id: number; page: number }) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<ListPageImagesResponse>(`${b}/api/ppt/list-page-images`, payload);
+}
+
+export async function updatePptImagePlacement(
+  baseUrl: string,
+  payload: { file_id: number; page: number; shape_index: number; placement: NormalizedRect }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<UpdateImagePlacementResponse>(`${b}/api/ppt/update-image-placement`, payload);
+}
+
+export async function removePptImage(
+  baseUrl: string,
+  payload: { file_id: number; page: number; shape_index: number }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<RemoveImageResponse>(`${b}/api/ppt/remove-image`, payload);
+}
+
+export async function fetchPptShapeImageBlobUrl(
+  baseUrl: string,
+  payload: { file_id: number; page: number; shape_index: number }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  const params = new URLSearchParams({
+    file_id: String(payload.file_id),
+    page: String(payload.page),
+    shape_index: String(payload.shape_index),
+  });
+  const res = await fetch(`${b}/api/ppt/shape-image?${params.toString()}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return URL.createObjectURL(await res.blob());
+}
+
+export async function stagePptImage(
+  baseUrl: string,
+  payload: { file_id: number; image_data: string }
+) {
+  const b = normalizeBaseUrl(baseUrl);
+  if (!b) throw new Error("baseUrl 为空");
+  return await postJSON<StageImageResponse>(`${b}/api/ppt/stage-image`, payload);
+}
+
+export async function fetchAuthedAssetBlobUrl(baseUrl: string, path: string) {
+  const b = normalizeBaseUrl(baseUrl);
+  const url = path.startsWith("http") ? path : `${b}${path.startsWith("/") ? path : `/${path}`}`;
+  const res = await fetch(url, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return URL.createObjectURL(await res.blob());
 }
 

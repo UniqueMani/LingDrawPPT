@@ -56,12 +56,24 @@ export interface OCRRegionResponse {
   source: "ocr";
 }
 
+export interface PageDetailItem {
+  page: number;
+  title: string;
+  text: string;
+  preview_url?: string;
+  thumbnail_url?: string;
+  preview_updated_at?: number;
+  text_blocks?: TextBlock[];
+  page_width?: number | null;
+  page_height?: number | null;
+}
+
 export interface ExtractTextResponse {
   filename: string;
   text: string;
   title: string;
   pages: number;
-  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
+  pages_detail: PageDetailItem[];
   file_id: number;
 }
 
@@ -109,7 +121,7 @@ export interface FileRecord {
 
 export interface FileDetail extends FileRecord {
   extracted_text: string;
-  pages_detail: Array<{ page: number; title: string; text: string; preview_url?: string; thumbnail_url?: string; text_blocks?: TextBlock[] }>;
+  pages_detail: PageDetailItem[];
 }
 
 export interface UsageLogDTO {
@@ -169,6 +181,8 @@ export interface SlideSnapshot {
 export interface SlideState {
   id: string;
   page: number;
+  pageWidth?: number;
+  pageHeight?: number;
   previewUrl?: string;
   thumbnailUrl?: string;
   sourceTitle: string;
@@ -182,6 +196,7 @@ export interface SlideState {
   chartCode?: VizLabChartCodeResponse;
   vizIllustration?: VizLabIllustrationResponse;
   fluxImage?: FluxGenerateImageResponse;
+  fluxAspectRatio?: string;
   statusFluxImage: "idle" | "loading" | "success" | "error";
   errorFluxImage?: string;
   statusAnalyze: "idle" | "loading" | "success" | "error";
@@ -356,5 +371,83 @@ export interface FluxGenerateImageResponse {
   selectedAttempt?: number;
   evaluation?: ImageQualityEvaluation | null;
   attemptsLog?: ImageGenAttemptLog[];
+}
+
+export interface NormalizedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface InsertSession {
+  fileId: number;
+  page: number;
+  imageUrl: string;
+  aspectRatio: string;
+  previewUrl: string;
+  thumbnailUrl?: string;
+  textBlocks: TextBlock[];
+  docName: string;
+  source?: "flux" | "chart";
+}
+
+export interface StageImageResponse {
+  image_url: string;
+}
+
+export interface RecommendPlacementResponse {
+  recommended: NormalizedRect;
+  occupied_blocks: TextBlock[];
+  preview_url: string;
+  page_width?: number | null;
+  page_height?: number | null;
+}
+
+export interface InsertImageResponse {
+  ok: boolean;
+  page: number;
+  preview_url: string;
+  download_url: string;
+  message: string;
+  picture?: PptPagePicture | null;
+}
+
+export interface RemoveLastImageResponse {
+  ok: boolean;
+  page: number;
+  removed: boolean;
+  preview_url: string;
+  message: string;
+}
+
+export interface PptPagePicture {
+  shape_index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  aspect_ratio: string;
+}
+
+export interface ListPageImagesResponse {
+  pictures: PptPagePicture[];
+  page_width?: number | null;
+  page_height?: number | null;
+}
+
+export interface UpdateImagePlacementResponse {
+  ok: boolean;
+  page: number;
+  preview_url: string;
+  message: string;
+}
+
+export interface RemoveImageResponse {
+  ok: boolean;
+  page: number;
+  removed: boolean;
+  preview_url: string;
+  message: string;
 }
 

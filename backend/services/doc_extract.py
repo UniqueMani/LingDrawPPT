@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import time
 from io import BytesIO
 from pathlib import Path
 from textwrap import wrap
@@ -58,6 +59,7 @@ def _save_preview_pair(img: Image.Image, out_dir: Path, page: int) -> Dict[str, 
     return {
         "preview_url": f"/previews/{rel}/{preview_name}",
         "thumbnail_url": f"/previews/{rel}/{thumb_name}",
+        "preview_updated_at": int(time.time() * 1000),
     }
 
 
@@ -210,15 +212,117 @@ def _render_pptx_previews(file_bytes: bytes, pages_detail: List[Dict[str, object
         detail.update(_save_preview_pair(img, out_dir, page))
 
 
-def _attach_previews(filename: str, file_bytes: bytes, pages_detail: List[Dict[str, object]]) -> None:
+def _attach_previews(filename: str, file_bytes: bytes, pages_detail: List[Dict[str, object]], out_dir: Path | None = None) -> None:
     if not pages_detail:
         return
     suffix = Path(filename).suffix.lower()
-    out_dir = PREVIEW_ROOT / uuid4().hex
+    target_dir = out_dir or (PREVIEW_ROOT / uuid4().hex)
+    target_dir.mkdir(parents=True, exist_ok=True)
     if suffix == ".pdf":
-        _render_pdf_previews(file_bytes, pages_detail, out_dir)
+        _render_pdf_previews(file_bytes, pages_detail, target_dir)
     elif suffix == ".pptx":
-        _render_pptx_previews(file_bytes, pages_detail, out_dir)
+        _render_pptx_previews(file_bytes, pages_detail, target_dir)
+
+
+def refresh_previews_in_dir(filename: str, file_bytes: bytes, pages_detail: List[Dict[str, object]], out_dir: Path) -> None:
+    if not pages_detail:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _attach_previews(filename, file_bytes, pages_detail, out_dir=out_dir)
+
+
+def _page_detail_item(pages_detail: List[Dict[str, object]], page: int) -> Dict[str, object] | None:
+    for item in pages_detail:
+        if int(item.get("page", 0) or 0) == page:
+            return item
+    return None
+
+
+def _render_single_pdf_page_preview(
+    pdf_bytes: bytes,
+    detail: Dict[str, object],
+    out_dir: Path,
+    page: int,
+) -> None:
+    page_no = int(detail.get("page", page) or page)
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        img = _text_preview_image(str(detail.get("title", "")), str(detail.get("text", "")), wide=True)
+        detail.update(_save_preview_pair(img, out_dir, page_no))
+        return
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        try:
+            page_obj = doc.load_page(page_no - 1)
+            pix = page_obj.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        except Exception:
+            img = _text_preview_image(str(detail.get("title", "")), str(detail.get("text", "")), wide=True)
+        detail.update(_save_preview_pair(img, out_dir, page_no))
+    finally:
+        doc.close()
+
+
+def refresh_single_page_preview_in_dir(
+    filename: str,
+    file_bytes: bytes,
+    pages_detail: List[Dict[str, object]],
+    out_dir: Path,
+    page: int,
+) -> None:
+    if not pages_detail:
+        return
+    detail = _page_detail_item(pages_detail, page)
+    if detail is None:
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pptx":
+        pdf_bytes = _convert_pptx_to_pdf(file_bytes)
+        if pdf_bytes:
+            _render_single_pdf_page_preview(pdf_bytes, detail, out_dir, page)
+            return
+    if suffix == ".pdf":
+        _render_single_pdf_page_preview(file_bytes, detail, out_dir, page)
+        return
+
+    img = _text_preview_image(str(detail.get("title", "")), str(detail.get("text", "")), wide=True)
+    detail.update(_save_preview_pair(img, out_dir, page))
+
+
+def export_document_bytes(
+    *,
+    original_filename: str,
+    file_bytes: bytes,
+    export_format: str,
+) -> tuple[bytes, str, str]:
+    suffix = Path(original_filename).suffix.lower()
+    stem = Path(original_filename).stem or "document"
+    fmt = export_format.lower()
+
+    if fmt in {"pptx", "ppt"}:
+        if suffix != ".pptx":
+            raise ValueError("当前文件不是 PPTX，无法导出为 PPT")
+        return (
+            file_bytes,
+            original_filename if original_filename.lower().endswith(".pptx") else f"{stem}.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+    if fmt == "pdf":
+        if suffix == ".pdf":
+            return file_bytes, original_filename, "application/pdf"
+        if suffix != ".pptx":
+            raise ValueError("当前文件不支持导出为 PDF")
+        pdf_bytes = _convert_pptx_to_pdf(file_bytes)
+        if not pdf_bytes:
+            raise RuntimeError("PDF 转换失败，请确认已安装 LibreOffice 或 Microsoft PowerPoint")
+        return pdf_bytes, f"{stem}.pdf", "application/pdf"
+
+    raise ValueError("不支持的导出格式")
 
 
 def _normalize_lines(lines: List[str], max_lines: int = 240) -> str:
@@ -350,7 +454,16 @@ def extract_text_from_pptx(file_bytes: bytes) -> Dict[str, object]:
                     text_blocks.append(block)
         joined = "\n".join(slide_lines)
         title = (slide_lines[0] if slide_lines else f"第 {idx} 页")[:80]
-        pages_detail.append({"page": idx, "title": title, "text": joined, "text_blocks": text_blocks})
+        pages_detail.append(
+            {
+                "page": idx,
+                "title": title,
+                "text": joined,
+                "text_blocks": text_blocks,
+                "page_width": page_width,
+                "page_height": page_height,
+            }
+        )
     text = _normalize_lines(lines)
     first_line = text.splitlines()[0].strip() if text else ""
     return {

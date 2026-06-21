@@ -195,7 +195,6 @@ function formatDimensionLines(item: any, deducted: number) {
   }
 
   return Array.from(new Set(lines));
-}
 
 async function rerunDocAnalysis() {
   if (!store.slides.length) return;
@@ -241,7 +240,7 @@ function runFluxGenerate() {
   });
 }
 
-defineExpose({ runFluxGenerate });
+defineExpose({ runFluxGenerate, getAspectRatio });
 </script>
 
 <template>

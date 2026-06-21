@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 
 from backend.config import UPLOAD_DIR
 from backend.db import (
@@ -18,7 +18,7 @@ from backend.db import (
 )
 from backend.deps import require_user
 from backend.models import ExtractTextResponse, FileDetailDTO, FileRecordDTO
-from backend.services.doc_extract import extract_text_from_document
+from backend.services.doc_extract import extract_text_from_document, export_document_bytes
 
 
 router = APIRouter()
@@ -137,6 +137,36 @@ async def download_file(file_id: int, user: dict = Depends(require_user)) -> Fil
         raise HTTPException(status_code=404, detail="stored file missing")
     media_type = str(row.get("mime_type", "") or "application/octet-stream")
     return FileResponse(path, filename=str(row["original_filename"]), media_type=media_type)
+
+
+@router.get("/files/{file_id}/export")
+async def export_file(
+    file_id: int,
+    format: str = Query("pptx", pattern="^(?i)(pptx|ppt|pdf)$"),
+    user: dict = Depends(require_user),
+) -> Response:
+    row = get_user_uploaded_file(file_id, int(user["id"]))
+    if not row:
+        raise HTTPException(status_code=404, detail="file not found")
+    path = Path(str(row.get("file_path", "")))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="stored file missing")
+
+    original_filename = str(row.get("original_filename") or "document")
+    try:
+        content, filename, media_type = export_document_bytes(
+            original_filename=original_filename,
+            file_bytes=path.read_bytes(),
+            export_format=format.lower(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    record_event(int(user["id"]), f"export_{format.lower()}")
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=content, media_type=media_type, headers=headers)
 
 
 @router.delete("/files/{file_id}")
